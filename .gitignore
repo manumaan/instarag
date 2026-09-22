@@ -11,3 +11,8 @@ tsconfig.tsbuildinfo
 
 # Internal working notes: kept local, not published.
 CLAUDE.md
+
+# Instagram session cookies: a full account credential. Never commit.
+cookies.txt
+*cookies*.txt
+cookies/

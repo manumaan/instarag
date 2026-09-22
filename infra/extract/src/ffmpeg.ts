@@ -11,6 +11,15 @@ const LONGEST_EDGE = 720;
 /** -2 keeps the short edge even (chroma alignment), so it can round up by a pixel. */
 /** mjpeg has no 0-100 quality scale; q:v 5 is the closest stop to JPEG q80. */
 const JPEG_QSCALE = '5';
+/**
+ * JPEG is a full-range format and ffmpeg's mjpeg encoder refuses limited-range
+ * input outright: a real reel arrived as VP9 yuv420p(tv, bt709) and every frame
+ * command died with "Non full-range YUV is non-standard" ->
+ * "ff_frame_thread_encoder_init failed". Naming the full-range pixel format
+ * makes ffmpeg convert instead of refusing, and is harmless when the source is
+ * already full range.
+ */
+const JPEG_PIX_FMT = 'yuvj420p';
 const SCALE_FILTER = `scale=w='if(gt(iw,ih),${LONGEST_EDGE},-2)':h='if(gt(iw,ih),-2,${LONGEST_EDGE})'`;
 
 export function run(
@@ -81,6 +90,7 @@ export async function frameAt(input: string, tsMs: number, outFile: string): Pro
     '-frames:v', '1',
     '-vf', SCALE_FILTER,
     '-q:v', JPEG_QSCALE,
+    '-pix_fmt', JPEG_PIX_FMT,
     outFile,
   ]);
   return { tsMs, file: outFile };
@@ -88,7 +98,14 @@ export async function frameAt(input: string, tsMs: number, outFile: string): Pro
 
 /** Resizes a still image (a screenshot upload) into the same JPEG shape as a keyframe. */
 export async function convertStill(input: string, outFile: string): Promise<ExtractedFrame> {
-  await run(FFMPEG, ['-nostdin', '-y', '-i', input, '-vf', SCALE_FILTER, '-q:v', JPEG_QSCALE, outFile]);
+  await run(FFMPEG, [
+    '-nostdin', '-y',
+    '-i', input,
+    '-vf', SCALE_FILTER,
+    '-q:v', JPEG_QSCALE,
+    '-pix_fmt', JPEG_PIX_FMT,
+    outFile,
+  ]);
   return { tsMs: 0, file: outFile };
 }
 
@@ -112,6 +129,7 @@ export async function extractSceneFrames(
     '-vf', `select='gt(scene,${sceneThreshold})',${SCALE_FILTER},showinfo`,
     '-vsync', 'vfr',
     '-q:v', JPEG_QSCALE,
+    '-pix_fmt', JPEG_PIX_FMT,
     path.join(outDir, 'scene-%04d.jpg'),
   ]);
 
