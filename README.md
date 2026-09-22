@@ -14,7 +14,11 @@ Downloading public reels is unauthenticated: no IG account, no password, no cook
 does violate Meta's ToS, and Instagram rate-limits anonymous access — a burst of ingests
 from one IP range will start returning "you have exceeded the rate-limit for accessing
 posts anonymously", which clears with time. Connected mode does not help there: it reaches
-your own media only. A screen recording always works. The
+your own media only. A screen recording always works.
+
+Pasting a reel already in the library returns the existing item rather than downloading it
+again, so repeats cost nothing against that limit. A failed attempt is still retried, which
+is what makes re-pasting after a rate limit clears the right move. The
 exposure is the fetching IP being blocked rather than an account ban, since no account is
 involved; yt-dlp is pinned in `infra/extract/Dockerfile`, and bumping that version is the
 expected fix when Instagram changes its markup and downloads start failing.

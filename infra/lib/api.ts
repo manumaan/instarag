@@ -119,6 +119,13 @@ export class Api extends Construct {
 
     const createFromUrl = makeFn('CreateFromUrl', 'create-from-url.ts');
     allow(createFromUrl, ['dynamodb:PutItem'], [storage.mediaTable.tableArn]);
+    // Re-pasting a reel we already hold must not spend Instagram's anonymous
+    // rate-limit budget on a second download.
+    allow(
+      createFromUrl,
+      ['dynamodb:Query'],
+      [`${storage.mediaTable.tableArn}/index/${Storage.MEDIA_BY_PERMALINK}`],
+    );
     this.createFromUrlFunction = createFromUrl;
 
     const listMedia = makeFn('ListMedia', 'list-media.ts');

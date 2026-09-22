@@ -33,6 +33,8 @@ export class Storage extends Construct {
   static readonly MEDIA_ENTITY = 'media';
   /** GSI on the media table: newest-first library listing. */
   static readonly MEDIA_BY_CREATED_AT = 'byCreatedAt';
+  /** Sparse GSI: find an already-ingested reel by its permalink. */
+  static readonly MEDIA_BY_PERMALINK = 'byPermalink';
   /** GSI on the jobs table: all jobs for one media item. */
   static readonly JOBS_BY_MEDIA = 'byMedia';
   /** GSI on the threads table: newest-first thread list. */
@@ -119,6 +121,15 @@ export class Storage extends Construct {
       sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
+    });
+
+    // Sparse: only items with a permalink appear, which is what makes a
+    // re-paste of the same reel cheap to detect without scanning the library.
+    this.mediaTable.addGlobalSecondaryIndex({
+      indexName: Storage.MEDIA_BY_PERMALINK,
+      partitionKey: { name: 'permalink', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.INCLUDE,
+      nonKeyAttributes: ['status', 'created_at', 'source', 'type'],
     });
 
     this.framesTable = new dynamodb.Table(this, 'FramesTable', {

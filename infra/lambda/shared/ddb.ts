@@ -12,6 +12,7 @@ export const TABLES = {
 };
 
 export const MEDIA_BY_CREATED_AT = 'byCreatedAt';
+export const MEDIA_BY_PERMALINK = 'byPermalink';
 /** Constant partition key for the recency index (single-user library). */
 export const MEDIA_ENTITY = 'media';
 

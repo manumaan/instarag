@@ -439,3 +439,15 @@ test('connected mode cannot reach other accounts: only own-media scope is reques
     }
   }
 });
+
+test('a re-pasted reel is found by permalink rather than downloaded again', () => {
+  const template = synth();
+  const media = Object.values(template.findResources('AWS::DynamoDB::Table')).find((t) =>
+    JSON.stringify(t.Properties.KeySchema) === JSON.stringify([{ AttributeName: 'id', KeyType: 'HASH' }]),
+  );
+  const indexes = (media?.Properties.GlobalSecondaryIndexes ?? []) as Array<{ IndexName: string }>;
+  assert.ok(
+    indexes.some((i) => i.IndexName === 'byPermalink'),
+    'without this index, every paste of the same reel costs another anonymous download',
+  );
+});
