@@ -102,6 +102,9 @@ export default function LibraryPage() {
         <button className="ghost small" onClick={() => setLensOpen(true)}>
           Search by screenshot
         </button>
+        <Link href="/connect" className="back">
+          Connect Instagram →
+        </Link>
       </p>
       {lensOpen && <LensSheet onClose={() => setLensOpen(false)} />}
       <DropZone onAdded={(media) => setItems((prev) => [media, ...prev.filter((m) => m.id !== media.id)])} />

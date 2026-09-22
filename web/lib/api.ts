@@ -256,3 +256,42 @@ function putWithProgress(
     xhr.send(file);
   });
 }
+
+export interface ConnectionStatus {
+  connected: boolean;
+  /** false until the Meta app id and secret are both in place. */
+  configured: boolean;
+  username?: string;
+  igUserId?: string;
+  scopes?: string;
+  expiresAt?: string;
+  daysLeft?: number;
+  lastSyncAt?: string;
+}
+
+export interface SyncResult {
+  checked: number;
+  results: Array<{ ig_media_id: string; status: string; mediaId?: string; reason?: string }>;
+}
+
+export const connectionStatus = () => call<ConnectionStatus>('/connect/instagram');
+
+export const startConnect = () =>
+  call<{ authorizeUrl: string; redirectUri: string }>('/connect/instagram/start', { method: 'POST' });
+
+export const completeConnect = (code: string, state: string) =>
+  call<{ connected: boolean; username?: string; expiresInDays?: number }>('/connect/instagram/exchange', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code, state }),
+  });
+
+export const disconnectInstagram = () =>
+  call<{ connected: boolean }>('/connect/instagram', { method: 'DELETE' });
+
+export const syncInstagram = (limit?: number) =>
+  call<SyncResult>('/connect/instagram/sync', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ limit }),
+  });

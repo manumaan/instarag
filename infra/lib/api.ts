@@ -12,12 +12,15 @@ import * as path from 'node:path';
 import type { Auth } from './auth';
 import { Storage } from './storage';
 import type { Search } from './search';
+import type { Connected } from './connected';
 
 export interface ApiProps {
   readonly storage: Storage;
   readonly auth: Auth;
   readonly webOrigins: string[];
   readonly search: Search;
+  /** Connected mode's handlers, mounted on this API. */
+  readonly connected: Connected;
   /** Model that answers questions; same one that analyses frames. */
   readonly analysisModel: string;
   readonly embeddingModel: string;
@@ -247,6 +250,14 @@ export class Api extends Construct {
       [apigw.HttpMethod.POST, '/lens/uploads', lensUpload],
       [apigw.HttpMethod.POST, '/lens/similar', lensSimilar],
       [apigw.HttpMethod.POST, '/lens/web', lensWeb],
+      // Connected mode. The OAuth code is posted here by our own page rather
+      // than landing on an unauthenticated callback, so it never leaves an
+      // authenticated request.
+      [apigw.HttpMethod.POST, '/connect/instagram/start', props.connected.startFunction],
+      [apigw.HttpMethod.POST, '/connect/instagram/exchange', props.connected.exchangeFunction],
+      [apigw.HttpMethod.GET, '/connect/instagram', props.connected.statusFunction],
+      [apigw.HttpMethod.DELETE, '/connect/instagram', props.connected.disconnectFunction],
+      [apigw.HttpMethod.POST, '/connect/instagram/sync', props.connected.syncFunction],
     ];
 
     for (const [method, routePath, fn] of routes) {

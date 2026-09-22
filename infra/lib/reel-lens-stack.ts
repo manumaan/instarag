@@ -7,6 +7,7 @@ import { Pipeline } from './pipeline';
 import { Realtime } from './realtime';
 import { Search } from './search';
 import { Hosting } from './hosting';
+import { Connected } from './connected';
 
 export interface ReelLensStackProps extends StackProps {
   readonly webOrigins: string[];
@@ -16,6 +17,8 @@ export interface ReelLensStackProps extends StackProps {
   readonly maxFrames: number;
   readonly embeddingModel: string;
   readonly maxOcu: number;
+  /** Instagram app id for connected mode. Empty until MJ creates the Meta app. */
+  readonly instagramAppId: string;
 }
 
 /**
@@ -43,11 +46,20 @@ export class ReelLensStack extends Stack {
 
     const search = new Search(this, 'Search', { maxOcu: props.maxOcu });
 
+    // Meta redirects the browser to our own page, which then posts the code to
+    // the API behind the app's own auth.
+    const connected = new Connected(this, 'Connected', {
+      storage,
+      appId: props.instagramAppId,
+      redirectUri: `${hosting.origin}/connect/callback/`,
+    });
+
     const api = new Api(this, 'Api', {
       storage,
       auth,
       webOrigins,
       search,
+      connected,
       analysisModel: props.analysisModel,
       embeddingModel: props.embeddingModel,
     });
@@ -61,9 +73,9 @@ export class ReelLensStack extends Stack {
     });
     const realtime = new Realtime(this, 'Realtime', { storage, auth });
 
-    // Both ingest routes kick off the pipeline: a completed upload goes straight
-    // to extraction, a pasted permalink is downloaded first.
-    for (const fn of [api.completeUploadFunction, api.createFromUrlFunction]) {
+    // Every ingest route kicks off the pipeline: a completed upload and an API
+    // sync go straight to extraction, a pasted permalink is downloaded first.
+    for (const fn of [api.completeUploadFunction, api.createFromUrlFunction, connected.syncFunction]) {
       pipeline.stateMachine.grantStartExecution(fn);
       fn.addEnvironment('STATE_MACHINE_ARN', pipeline.stateMachine.stateMachineArn);
     }

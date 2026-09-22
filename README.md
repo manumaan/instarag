@@ -11,7 +11,10 @@ and the places it can actually read off the signage, then gets embedded into a v
 index so you can ask questions about it, or find it again from a screenshot.
 
 Downloading public reels is unauthenticated: no IG account, no password, no cookies. It
-does violate Meta's ToS, and Instagram may refuse requests from datacenter IP ranges. The
+does violate Meta's ToS, and Instagram rate-limits anonymous access — a burst of ingests
+from one IP range will start returning "you have exceeded the rate-limit for accessing
+posts anonymously", which clears with time. Connected mode does not help there: it reaches
+your own media only. A screen recording always works. The
 exposure is the fetching IP being blocked rather than an account ban, since no account is
 involved; yt-dlp is pinned in `infra/extract/Dockerfile`, and bumping that version is the
 expected fix when Instagram changes its markup and downloads start failing.
@@ -54,6 +57,37 @@ authority on names, and speech is the authority on what was said. And Transcribe
 coarse blocks (a 46s reel came back as three ~20s segments), so segments longer than ~10s
 are split with timestamps apportioned by character count: close enough to put the player
 within a second or two, not exact.
+
+## Connected mode
+
+Links your own Instagram Business or Creator account through Meta OAuth, and pulls your own
+reels in through the same pipeline everything else uses. **No Instagram password, cookie or
+session is involved** — and it only reaches your own media, so it is not a way to fetch
+other people's reels.
+
+Setting it up needs a Meta app, which only you can create:
+
+1. At developers.facebook.com, create an app and add the **Instagram** product with
+   *Instagram API with Instagram Login*.
+2. Your Instagram account must be **Business or Creator** — personal accounts cannot connect.
+3. Add this exact redirect URI to the app (it is a stack output, `ConnectedRedirectUri`):
+   `https://<your-cloudfront-domain>/connect/callback/`
+4. Deploy with the app id, then put the app secret into the secret the stack created:
+
+```bash
+cd infra && npm run deploy -- -c instagramAppId=YOUR_APP_ID
+aws secretsmanager put-secret-value \
+  --secret-id "$(aws cloudformation describe-stacks --stack-name ReelLens \
+    --query "Stacks[0].Outputs[?contains(OutputKey,'AppSecretArn')].OutputValue" --output text)" \
+  --secret-string 'YOUR_APP_SECRET'
+```
+
+Then open `/connect` in the app and press Connect. Until both the id and secret are in
+place the page says so rather than failing.
+
+The long-lived token lasts 60 days, is stored encrypted under a customer-managed KMS key,
+and is refreshed daily by a scheduled Lambda once it is old enough to be refreshed — letting
+it lapse would mean re-authorising by hand.
 
 ## Speed
 
@@ -253,6 +287,11 @@ All routes sit behind the Cognito JWT authorizer and take the **id token** in `a
 | `POST /lens/uploads` | Presigned PUT for a screenshot to search with |
 | `POST /lens/similar` | Nearest frames to a screenshot, or to a frame already indexed |
 | `POST /lens/web` | Identify what is in a frame, then look it up on the web |
+| `POST /connect/instagram/start` | Begin OAuth; returns the URL to send the browser to |
+| `POST /connect/instagram/exchange` | Finish OAuth: code for a long-lived token |
+| `GET /connect/instagram` | Whether an account is connected, and token health |
+| `DELETE /connect/instagram` | Forget the token |
+| `POST /connect/instagram/sync` | Ingest the connected account's own reels |
 
 The WebSocket endpoint takes the same id token as `?token=…`, because a WebSocket
 handshake cannot carry an authorization header.

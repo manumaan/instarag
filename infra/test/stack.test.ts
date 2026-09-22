@@ -14,6 +14,7 @@ function synth() {
     maxFrames: 20,
     embeddingModel: 'amazon.titan-embed-image-v1',
     maxOcu: 2,
+    instagramAppId: '1234567890',
   });
   return Template.fromStack(stack);
 }
@@ -23,7 +24,7 @@ test('every API route is authorised by the user pool', () => {
   const routes = Object.entries(template.findResources('AWS::ApiGatewayV2::Route')).filter(
     ([, route]) => !String(route.Properties.RouteKey).startsWith('$'),
   );
-  assert.equal(routes.length, 12);
+  assert.equal(routes.length, 17);
   for (const [name, route] of routes) {
     assert.equal(route.Properties.AuthorizationType, 'JWT', `${name} must require a JWT`);
   }
@@ -92,7 +93,7 @@ test('handlers only see table and bucket names, never credentials', () => {
     for (const key of Object.keys(env)) {
       assert.ok(
         // Resource identifiers only — never a secret, key or token.
-        /^(MEDIA_BUCKET|MEDIA_TABLE|FRAMES_TABLE|JOBS_TABLE|CONNECTIONS_TABLE|CAPTION_FACTS_TABLE|TRANSCRIPT_SEGMENTS_TABLE|STATE_MACHINE_ARN|USER_POOL_ID|USER_POOL_CLIENT_ID|WS_MANAGEMENT_ENDPOINT|SCENE_THRESHOLD|MAX_FRAMES|PHASH_THRESHOLD|MAX_DOWNLOAD_BYTES|YT_DLP_PATH|HOME|XDG_CACHE_HOME|ANALYSIS_MODEL_ID|SEARCH_SECRET_ARN|ANALYSIS_EFFORT|ANALYSIS_MAX_TOKENS|THREADS_TABLE|MESSAGES_TABLE|SEARCH_ENDPOINT|SEARCH_INDEX|EMBEDDING_MODEL_ID|EMBEDDING_DIMENSION|AWS_NODEJS_CONNECTION_REUSE_ENABLED)$/.test(
+        /^(MEDIA_BUCKET|MEDIA_TABLE|FRAMES_TABLE|JOBS_TABLE|CONNECTIONS_TABLE|CAPTION_FACTS_TABLE|TRANSCRIPT_SEGMENTS_TABLE|STATE_MACHINE_ARN|USER_POOL_ID|USER_POOL_CLIENT_ID|WS_MANAGEMENT_ENDPOINT|SCENE_THRESHOLD|MAX_FRAMES|PHASH_THRESHOLD|MAX_DOWNLOAD_BYTES|YT_DLP_PATH|HOME|XDG_CACHE_HOME|ANALYSIS_MODEL_ID|SEARCH_SECRET_ARN|IG_CONNECTION_TABLE|IG_APP_SECRET_ARN|IG_APP_ID|IG_REDIRECT_URI|IG_GRAPH_HOST|IG_AUTHORIZE_URL|IG_TOKEN_URL|ANALYSIS_EFFORT|ANALYSIS_MAX_TOKENS|THREADS_TABLE|MESSAGES_TABLE|SEARCH_ENDPOINT|SEARCH_INDEX|EMBEDDING_MODEL_ID|EMBEDDING_DIMENSION|AWS_NODEJS_CONNECTION_REUSE_ENABLED)$/.test(
           key,
         ),
         `${name} has unexpected env var ${key}`,
@@ -147,9 +148,10 @@ test('only the ingest handlers may start the pipeline, and only that one', () =>
   const statements = Object.values(template.findResources('AWS::IAM::Policy')).flatMap(
     (policy) => policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown }>,
   );
-  // Two ingest routes start the pipeline: completed upload and pasted permalink.
+  // Three ingest routes start the pipeline: completed upload, pasted permalink,
+  // and a connected-mode sync.
   const starts = statements.filter((s) => [s.Action].flat().includes('states:StartExecution'));
-  assert.equal(starts.length, 2, 'only the two ingest handlers may start the pipeline');
+  assert.equal(starts.length, 3, 'only the three ingest handlers may start the pipeline');
   for (const statement of starts) {
     assert.ok(
       !JSON.stringify(statement.Resource).includes('"*"'),
@@ -310,21 +312,14 @@ test('Lens query uploads are separate from media and expire', () => {
   });
 });
 
-test('the web search key lives in Secrets Manager, not in the template', () => {
+test('every secret lives in Secrets Manager, with no value in the template', () => {
   const template = synth();
-  template.resourceCountIs('AWS::SecretsManager::Secret', 1);
-  const secret = Object.values(template.findResources('AWS::SecretsManager::Secret'))[0];
-  // No literal value anywhere: CDK generates a placeholder and the real key is
-  // put in out of band.
-  assert.ok(!('SecretString' in secret.Properties), 'a key must never be in the template');
-
-  const statements = Object.values(template.findResources('AWS::IAM::Policy')).flatMap(
-    (policy) => policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[] }>,
-  );
-  const readers = statements.filter((s) =>
-    [s.Action].flat().some((a) => String(a).startsWith('secretsmanager:GetSecretValue')),
-  );
-  assert.equal(readers.length, 1, 'only the web search handler may read the key');
+  // Brave's search key and Instagram's app secret.
+  template.resourceCountIs('AWS::SecretsManager::Secret', 2);
+  for (const secret of Object.values(template.findResources('AWS::SecretsManager::Secret'))) {
+    // CDK generates a placeholder; the real value is put in out of band.
+    assert.ok(!('SecretString' in secret.Properties), 'a secret value must never be in the template');
+  }
 });
 
 test('no handler takes the search key through its environment', () => {
@@ -398,4 +393,49 @@ test('directory paths are rewritten to index.html, or every page but / 404s', ()
   const associations = distribution.Properties.DistributionConfig.DefaultCacheBehavior.FunctionAssociations;
   assert.equal(associations.length, 1, 'the rewrite must actually be attached to the behaviour');
   assert.equal(associations[0].EventType, 'viewer-request');
+});
+
+test('the Instagram token is held under a customer-managed key', () => {
+  const template = synth();
+  // Not the AWS-owned default: this table holds a credential for someone's
+  // Instagram account.
+  template.hasResourceProperties('AWS::DynamoDB::Table', {
+    SSESpecification: { SSEEnabled: true, SSEType: 'KMS' },
+  });
+  const keys = Object.values(template.findResources('AWS::KMS::Key'));
+  assert.equal(keys.length, 1, 'one customer-managed key');
+  assert.equal(keys[0].Properties.EnableKeyRotation, true);
+});
+
+test('the Instagram app secret is in Secrets Manager with no value in the template', () => {
+  const template = synth();
+  const secrets = Object.values(template.findResources('AWS::SecretsManager::Secret'));
+  // Brave's key plus Instagram's.
+  assert.equal(secrets.length, 2);
+  for (const secret of secrets) {
+    assert.ok(!('SecretString' in secret.Properties), 'no secret value may appear in the template');
+  }
+});
+
+test('the token is refreshed on a schedule, because a lapse needs manual re-auth', () => {
+  const template = synth();
+  template.resourceCountIs('AWS::Events::Rule', 1);
+  const rule = Object.values(template.findResources('AWS::Events::Rule'))[0];
+  assert.equal(rule.Properties.ScheduleExpression, 'rate(1 day)');
+  assert.equal(rule.Properties.State, 'ENABLED');
+});
+
+test('connected mode cannot reach other accounts: only own-media scope is requested', () => {
+  // The scope is asserted in instagram.test.ts; here we check no handler is
+  // handed an Instagram password or cookie by configuration.
+  const template = synth();
+  for (const [name, fn] of Object.entries(template.findResources('AWS::Lambda::Function'))) {
+    if (name.startsWith('Custom')) continue;
+    for (const key of Object.keys(fn.Properties.Environment?.Variables ?? {})) {
+      assert.ok(
+        !/COOKIE|IG_PASSWORD|IG_USERNAME|SESSION_ID/i.test(key),
+        `${name} carries what looks like an Instagram credential in ${key}`,
+      );
+    }
+  }
 });

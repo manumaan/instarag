@@ -36,6 +36,13 @@ const embeddingModel = app.node.tryGetContext('embeddingModel') ?? 'amazon.titan
  */
 const maxOcu = Number(app.node.tryGetContext('maxOcu') ?? 2);
 
+/**
+ * Instagram app id for connected mode, from the Meta App Dashboard. Not a
+ * secret — the app *secret* goes into Secrets Manager. Empty until the Meta
+ * app exists, which leaves the connect endpoints reporting "not configured".
+ */
+const instagramAppId = app.node.tryGetContext('instagramAppId') ?? '';
+
 new ReelLensStack(app, 'ReelLens', {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1' },
   webOrigins,
@@ -45,5 +52,6 @@ new ReelLensStack(app, 'ReelLens', {
   maxFrames,
   embeddingModel,
   maxOcu,
+  instagramAppId,
   description: 'Reel Lens - Instagram reel/post analysis (Phase 1 skeleton)',
 });
