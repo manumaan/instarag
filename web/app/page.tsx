@@ -8,7 +8,26 @@ import StatusChip from '@/components/StatusChip';
 import { deleteMedia, listMedia, type Media } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
 
-const IN_FLIGHT: Media['status'][] = ['awaiting_upload', 'queued', 'downloading', 'extracting', 'analysing'];
+const IN_FLIGHT: Media['status'][] = [
+  'awaiting_upload',
+  'queued',
+  'downloading',
+  'extracting',
+  'analysing',
+  'indexing',
+];
+
+/**
+ * Prefer something meaningful over the raw permalink: the uploader, or the
+ * first sentence of what the reel turned out to be about.
+ */
+function title(media: Media): string {
+  if (media.original_filename) return media.original_filename;
+  if (media.uploader) return media.uploader;
+  const summary = media.analysis_summary?.split(/(?<=[.!?])\s/)[0];
+  if (summary) return summary.length > 90 ? `${summary.slice(0, 90)}…` : summary;
+  return media.permalink ?? media.id.slice(0, 8);
+}
 /** Safety net only: the WebSocket carries status changes. */
 const POLL_MS = 30_000;
 
@@ -99,11 +118,25 @@ export default function LibraryPage() {
             {items.map((media) => (
               <article key={media.id} className="card tile">
                 <Link href={`/media?id=${media.id}`} className="tile-body">
-                  <div className="tile-head">
+                  <div className="thumb">
+                    {media.thumbnailUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={media.thumbnailUrl}
+                        alt={media.analysis_summary ?? 'cover frame'}
+                        loading="lazy"
+                        // A reel still in the pipeline has no cover yet, and a
+                        // presigned url can outlive its object.
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <span className="muted small">{IN_FLIGHT.includes(media.status) ? 'working…' : 'no cover'}</span>
+                    )}
                     <StatusChip media={media} />
-                    <span className="muted small">{media.type}</span>
                   </div>
-                  <h3>{media.original_filename ?? media.permalink ?? media.id.slice(0, 8)}</h3>
+                  <h3>{title(media)}</h3>
                   <p className="muted small">{new Date(media.created_at).toLocaleString()}</p>
                   {media.error && <p className="error small">{media.error}</p>}
                 </Link>

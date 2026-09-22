@@ -10,7 +10,6 @@ export type MediaStatus =
   | 'downloading'
   | 'extracting'
   | 'analysing'
-  | 'transcribing'
   | 'indexing'
   | 'ready'
   | 'failed';
@@ -38,6 +37,8 @@ export interface Media {
   spoken_language?: string;
   /** 'frames' when the caption was read off the video rather than supplied. */
   caption_source?: string;
+  /** Presigned cover frame for the library grid. */
+  thumbnailUrl?: string;
   error?: string;
 }
 

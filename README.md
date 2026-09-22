@@ -55,6 +55,22 @@ coarse blocks (a 46s reel came back as three ~20s segments), so segments longer 
 are split with timestamps apportioned by character count: close enough to put the player
 within a second or two, not exact.
 
+## Speed
+
+Measured on a 46s reel with 20 frames: about a minute end to end, of which the vision call
+is 45-53s. Two things were worth fixing:
+
+- **Indexing went from 35s to 2s.** It was 25 embeddings awaited one at a time, each an S3
+  read plus a Bedrock call and almost entirely network wait. `EMBED_CONCURRENCY` (default 8)
+  bounds the fan-out so a long reel cannot trigger throttling.
+- **Transcription is now free.** It runs beside the vision call in a Step Functions Parallel
+  branch — the two read the same reel, write different fields and need nothing from each
+  other — so the Transcribe poll hides behind analysis instead of adding to it.
+
+What is left is the vision call itself, and the only levers there trade quality for speed:
+`ANALYSIS_EFFORT` (medium today) and the frame cap. Raising the cap was what fixed coverage
+in the first place, so shrinking it to save time would undo that.
+
 ## Analysis
 
 `analysing` is **one Bedrock call per reel** carrying every keyframe in order, each labelled

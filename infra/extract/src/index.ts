@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { BatchWriteCommand, DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import { BatchWriteCommand, DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { dedupeByPhash, phash } from './phash';
+import { mapWithConcurrency } from './concurrency';
 import {
   convertStill,
   extractAudio,
@@ -31,6 +32,12 @@ const PHASH_THRESHOLD = Number(process.env.PHASH_THRESHOLD ?? 8);
 /** Below this many scene cuts a longer clip gets evenly sampled instead. */
 const MIN_SCENE_FRAMES = 3;
 const SAMPLE_IF_LONGER_THAN_MS = 6000;
+/**
+ * ffmpeg passes in flight while hashing candidates. Each is a short process
+ * doing little work, so serialising them spent most of the stage on process
+ * startup; the cap keeps a long reel from oversubscribing the CPU.
+ */
+const HASH_CONCURRENCY = Number(process.env.HASH_CONCURRENCY ?? 4);
 
 export interface ExtractEvent {
   mediaId: string;
@@ -92,6 +99,7 @@ export async function handler(event: ExtractEvent): Promise<ExtractResult> {
 
     const kept = dedupeByPhash(candidates, PHASH_THRESHOLD, MAX_FRAMES);
     await storeFrames(mediaId, kept);
+    await recordCover(mediaId, kept[0]);
 
     console.log('extracted', {
       mediaId,
@@ -143,21 +151,20 @@ async function videoCandidates(input: string, workDir: string) {
   if (sceneFrames.length < MIN_SCENE_FRAMES && durationMs > SAMPLE_IF_LONGER_THAN_MS) {
     strategy = 'scene+sampled';
     const step = Math.floor(durationMs / MAX_FRAMES);
-    const sampled = [];
-    for (let i = 1; i < MAX_FRAMES; i++) {
-      const tsMs = step * i;
-      sampled.push({
-        ...(await frameAt(input, tsMs, path.join(workDir, `sample-${String(i).padStart(4, '0')}.jpg`))),
-        kind: 'sample' as const,
-      });
-    }
+    const indices = Array.from({ length: MAX_FRAMES - 1 }, (_, i) => i + 1);
+    const sampled = await mapWithConcurrency(indices, HASH_CONCURRENCY, async (i) => ({
+      ...(await frameAt(input, step * i, path.join(workDir, `sample-${String(i).padStart(4, '0')}.jpg`))),
+      kind: 'sample' as const,
+    }));
     extra = [...extra, ...sampled].sort((a, b) => a.tsMs - b.tsMs);
   }
 
-  const candidates: Candidate[] = [{ ...cover, kind: 'cover' as const, phash: phash(await grayscalePlane(cover.file)) }];
-  for (const frame of extra) {
-    candidates.push({ ...frame, phash: phash(await grayscalePlane(frame.file)) });
-  }
+  const hashed = await mapWithConcurrency(
+    [{ ...cover, kind: 'cover' as const }, ...extra],
+    HASH_CONCURRENCY,
+    async (frame) => ({ ...frame, phash: phash(await grayscalePlane(frame.file)) }),
+  );
+  const candidates: Candidate[] = hashed;
 
   return { candidates, durationMs, strategy, hasAudio };
 }
@@ -197,4 +204,21 @@ async function storeFrames(mediaId: string, frames: Candidate[]) {
   for (let i = 0; i < items.length; i += 25) {
     await ddb.send(new BatchWriteCommand({ RequestItems: { [FRAMES_TABLE]: items.slice(i, i + 25) } }));
   }
+}
+
+/**
+ * Stores the cover frame's key on the media record so the library grid can
+ * presign one thumbnail per row without querying the frames table per row.
+ */
+async function recordCover(mediaId: string, cover: Candidate | undefined) {
+  if (!cover) return;
+  await ddb.send(
+    new UpdateCommand({
+      TableName: MEDIA_TABLE,
+      Key: { id: mediaId },
+      UpdateExpression: 'SET cover_s3_key = :key',
+      ExpressionAttributeValues: { ':key': `media/${mediaId}/frames/${String(cover.tsMs).padStart(8, '0')}.jpg` },
+      ConditionExpression: 'attribute_exists(id)',
+    }),
+  );
 }

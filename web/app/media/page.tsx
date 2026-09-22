@@ -9,7 +9,7 @@ import LensSheet from '@/components/LensSheet';
 import { getMedia, type MediaDetail } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
 
-const IN_FLIGHT = ['awaiting_upload', 'queued', 'downloading', 'extracting', 'analysing', 'transcribing', 'indexing'];
+const IN_FLIGHT = ['awaiting_upload', 'queued', 'downloading', 'extracting', 'analysing', 'indexing'];
 /** Safety net only: the WebSocket carries status changes. */
 const POLL_MS = 30_000;
 

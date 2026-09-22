@@ -1,6 +1,7 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb, TABLES } from '../shared/ddb';
+import { mapWithConcurrency } from '../shared/concurrency';
 import type { MediaRecord } from '../shared/media';
 import { documentId, openSearchClient, INDEX_NAME, type IndexedDocument } from './client';
 import { embed } from './embed';
@@ -9,6 +10,12 @@ const s3 = new S3Client({});
 const BUCKET = process.env.MEDIA_BUCKET!;
 const CAPTION_FACTS_TABLE = process.env.CAPTION_FACTS_TABLE!;
 const TRANSCRIPT_SEGMENTS_TABLE = process.env.TRANSCRIPT_SEGMENTS_TABLE!;
+/**
+ * Embeddings in flight at once. Each is an S3 read plus a Bedrock call and is
+ * almost entirely network wait, so serialising them was the single slowest
+ * thing in the pipeline. Capped so a long reel cannot trigger throttling.
+ */
+const EMBED_CONCURRENCY = Number(process.env.EMBED_CONCURRENCY ?? 8);
 
 export interface IndexEvent {
   mediaId: string;
@@ -66,10 +73,9 @@ export async function handler(event: IndexEvent): Promise<IndexResult> {
     .sort((a, b) => Number(a.ts_ms) - Number(b.ts_ms));
 
   const client = openSearchClient();
-  const operations: unknown[] = [];
   let skipped = 0;
 
-  for (const frame of frames) {
+  const frameDocuments = await mapWithConcurrency(frames, EMBED_CONCURRENCY, async (frame) => {
     const description = (frame.description as string | undefined) ?? '';
     const ocrText = (frame.ocr_text as string | undefined) ?? '';
     // Without analysis there is nothing textual to match on; the image alone
@@ -77,11 +83,6 @@ export async function handler(event: IndexEvent): Promise<IndexResult> {
     if (!description && !ocrText) skipped += 1;
 
     const imageBase64 = await fetchFrame(frame.s3_key as string);
-    const embedding = await embed({
-      imageBase64,
-      text: [description, ocrText, places, caption].filter(Boolean).join('\n'),
-    });
-
     const document: IndexedDocument = {
       media_id: mediaId,
       ts_ms: Number(frame.ts_ms),
@@ -92,38 +93,50 @@ export async function handler(event: IndexEvent): Promise<IndexResult> {
       caption,
       places,
       taken_at: media.taken_at,
-      embedding,
+      embedding: await embed({
+        imageBase64,
+        text: [description, ocrText, places, caption].filter(Boolean).join('\n'),
+      }),
     };
-    operations.push({ index: { _index: INDEX_NAME, _id: documentId(mediaId, Number(frame.ts_ms), 'frame') } });
-    operations.push(document);
-  }
+    return document;
+  });
 
-  // Speech segments are embedded from their text alone: there is no image for
-  // a spoken moment, and Titan takes text on its own.
-  const segments = (segmentRows.Items ?? []).sort((a, b) => Number(a.start_ms) - Number(b.start_ms));
-  for (const segment of segments) {
-    const text = String(segment.text ?? '').trim();
-    if (!text) continue;
-    const startMs = Number(segment.start_ms);
+  // Speech segments embed from their text alone: there is no image for a spoken
+  // moment, and Titan takes text on its own.
+  const segments = (segmentRows.Items ?? [])
+    .map((segment) => ({
+      startMs: Number(segment.start_ms),
+      endMs: Number(segment.end_ms ?? segment.start_ms),
+      text: String(segment.text ?? '').trim(),
+    }))
+    .filter((segment) => segment.text)
+    .sort((a, b) => a.startMs - b.startMs);
+
+  const speechDocuments = await mapWithConcurrency(segments, EMBED_CONCURRENCY, async (segment) => {
     const document: IndexedDocument = {
       media_id: mediaId,
-      ts_ms: startMs,
+      ts_ms: segment.startMs,
       kind: 'speech',
       description: '',
       ocr_text: '',
-      speech: text,
+      speech: segment.text,
       caption,
       places,
       taken_at: media.taken_at,
-      end_ms: Number(segment.end_ms ?? startMs),
-      embedding: await embed({ text: [text, places].filter(Boolean).join('\n') }),
+      end_ms: segment.endMs,
+      embedding: await embed({ text: [segment.text, places].filter(Boolean).join('\n') }),
     };
-    operations.push({ index: { _index: INDEX_NAME, _id: documentId(mediaId, startMs, 'speech') } });
+    return document;
+  });
+
+  const operations: unknown[] = [];
+  for (const document of [...frameDocuments, ...speechDocuments]) {
+    operations.push({ index: { _index: INDEX_NAME, _id: documentId(mediaId, document.ts_ms, document.kind) } });
     operations.push(document);
   }
 
-  const frameCount = frames.length;
-  const speechCount = operations.length / 2 - frameCount;
+  const frameCount = frameDocuments.length;
+  const speechCount = speechDocuments.length;
   if (operations.length === 0) {
     return { mediaId, indexed: 0, frames: 0, speechSegments: 0, skipped };
   }

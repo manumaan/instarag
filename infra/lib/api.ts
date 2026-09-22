@@ -119,6 +119,8 @@ export class Api extends Construct {
     this.createFromUrlFunction = createFromUrl;
 
     const listMedia = makeFn('ListMedia', 'list-media.ts');
+    // Presigning the grid's thumbnails needs read access to the frames.
+    allow(listMedia, ['s3:GetObject'], [storage.mediaBucket.arnForObjects('media/*')]);
     allow(
       listMedia,
       ['dynamodb:Query'],

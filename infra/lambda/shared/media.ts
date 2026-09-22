@@ -5,7 +5,6 @@ export const MEDIA_STATUS = [
   'downloading',
   'extracting',
   'analysing',
-  'transcribing',
   'indexing',
   'ready',
   'failed',
@@ -24,6 +23,8 @@ export interface MediaRecord {
   status: MediaStatus;
   created_at: string;
   s3_key?: string;
+  /** Cover frame, for the library grid's thumbnail. */
+  cover_s3_key?: string;
   content_type?: string;
   bytes?: number;
   original_filename?: string;

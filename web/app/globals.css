@@ -97,12 +97,22 @@ pre {
 /* Library grid */
 .grid {
   display: grid; gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
 }
+
+/* Library thumbnails */
+.thumb {
+  position: relative; margin: -16px -16px 10px; border-radius: var(--radius) var(--radius) 0 0;
+  overflow: hidden; background: var(--surface-2);
+  aspect-ratio: 9 / 16; max-height: 260px;
+  display: grid; place-items: center;
+}
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .chip { position: absolute; top: 8px; left: 8px; backdrop-filter: blur(6px); }
 .tile { display: flex; flex-direction: column; gap: 10px; }
 .tile-body { text-decoration: none; display: block; }
 .tile-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.tile h3 { font-size: 15px; overflow-wrap: anywhere; }
+.tile h3 { font-size: 14px; overflow-wrap: anywhere; line-height: 1.35; }
 .tile button { align-self: flex-start; margin-top: auto; }
 
 .chip {

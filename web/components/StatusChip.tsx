@@ -6,7 +6,6 @@ const LABELS: Record<MediaStatus, string> = {
   downloading: 'downloading',
   extracting: 'extracting',
   analysing: 'analysing',
-  transcribing: 'transcribing',
   indexing: 'indexing',
   ready: 'ready',
   failed: 'failed',

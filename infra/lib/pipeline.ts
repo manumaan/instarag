@@ -83,7 +83,12 @@ export class Pipeline extends Construct {
       }),
     );
     this.extractFunction.addToRolePolicy(
-      new iam.PolicyStatement({ actions: ['dynamodb:GetItem'], resources: [storage.mediaTable.tableArn] }),
+      new iam.PolicyStatement({
+        // UpdateItem as well as GetItem: extraction records the cover frame's
+        // key on the record for the library grid.
+        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+        resources: [storage.mediaTable.tableArn],
+      }),
     );
     this.extractFunction.addToRolePolicy(
       new iam.PolicyStatement({ actions: ['dynamodb:BatchWriteItem'], resources: [storage.framesTable.tableArn] }),
@@ -423,7 +428,9 @@ export class Pipeline extends Construct {
     });
 
     const waitForTranscribe = new sfn.Wait(this, 'WaitForTranscribe', {
-      time: sfn.WaitTime.duration(Duration.seconds(10)),
+      // 5s, not 10: the whole wait used to sit on the critical path, and even
+      // now it is only worth what the analysis call does not already cover.
+      time: sfn.WaitTime.duration(Duration.seconds(5)),
     });
 
     const checkTranscribe = new tasks.CallAwsService(this, 'CheckTranscribe', {
@@ -456,38 +463,49 @@ export class Pipeline extends Construct {
       .next(new sfn.Succeed(this, 'Done'));
 
     // Poll the Transcribe job. A failed transcription still leaves a usable
-    // reel — the frames are analysed — so it falls through to indexing rather
-    // than failing the whole item.
+    // reel — the frames are analysed — so the branch succeeds either way
+    // rather than failing the whole item.
     const transcribeOutcome = new sfn.Choice(this, 'TranscribeDone')
       .when(
         sfn.Condition.stringEquals('$.transcribe.TranscriptionJob.TranscriptionJobStatus', 'COMPLETED'),
-        storeTranscript.next(indexOnwards),
+        storeTranscript,
       )
       .when(
         sfn.Condition.stringEquals('$.transcribe.TranscriptionJob.TranscriptionJobStatus', 'FAILED'),
         new sfn.Pass(this, 'TranscriptionUnavailable', {
-          comment: 'Transcribe could not process the audio; index the frames anyway',
-          resultPath: sfn.JsonPath.DISCARD,
-        }).next(indexOnwards),
+          comment: 'Transcribe could not process the audio; the frames are still analysed',
+        }),
       )
       .otherwise(waitForTranscribe);
 
-    const transcribeLeg = setMediaStatus('MarkTranscribing', 'transcribing')
-      .next(startTranscribe)
-      .next(waitForTranscribe)
-      .next(checkTranscribe)
-      .next(transcribeOutcome);
+    const transcribeBranch = startTranscribe.next(waitForTranscribe).next(checkTranscribe).next(transcribeOutcome);
 
-    // Screenshots and silent clips skip transcription entirely.
-    const hasAudio = new sfn.Choice(this, 'HasAudio')
-      .when(sfn.Condition.booleanEquals('$.extract.hasAudio', true), transcribeLeg)
-      .otherwise(indexOnwards);
+    /**
+     * Analysis and transcription run side by side: they read the same reel but
+     * write different fields, and neither needs the other's output. In series
+     * they cost the sum (~25s of a 75s pipeline); in parallel the transcription
+     * poll hides behind the vision call almost entirely.
+     */
+    const analyseAndTranscribe = new sfn.Parallel(this, 'AnalyseAndTranscribe', {
+      // The branches persist their own results; the next state needs the
+      // original input, not an array of branch outputs.
+      resultPath: sfn.JsonPath.DISCARD,
+    })
+      .branch(analyse)
+      .branch(
+        // Screenshots and silent clips have nothing to transcribe.
+        new sfn.Choice(this, 'HasAudio')
+          .when(sfn.Condition.booleanEquals('$.extract.hasAudio', true), transcribeBranch)
+          .otherwise(new sfn.Pass(this, 'NoAudio')),
+      );
 
     const extractOnwards = markExtracting
       .next(extract)
+      // One status for the pair, because in parallel there is no meaningful
+      // order between "analysing" and "transcribing".
       .next(setMediaStatus('MarkAnalysing', 'analysing'))
-      .next(analyse)
-      .next(hasAudio);
+      .next(analyseAndTranscribe)
+      .next(indexOnwards);
 
     // A pasted permalink has to be fetched first; an upload is already in S3.
     const needsDownload = new sfn.Choice(this, 'NeedsDownload')
@@ -506,10 +524,7 @@ export class Pipeline extends Construct {
       markExtracting,
       downloadReel,
       extract,
-      analyse,
-      startTranscribe,
-      checkTranscribe,
-      storeTranscript,
+      analyseAndTranscribe,
       indexFrames,
       markReady,
     ]) {
