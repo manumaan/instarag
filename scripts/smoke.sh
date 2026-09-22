@@ -8,22 +8,13 @@ set -euo pipefail
 
 STACK="${STACK:-ReelLens}"
 export AWS_REGION="${AWS_REGION:-us-east-1}"
+SMOKE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-resources=$(aws cloudformation list-stack-resources --stack-name "$STACK" --output json)
 outputs=$(aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].Outputs' --output json)
 
-fn() { # fn <logical-id-prefix> -> physical function name
-  printf '%s' "$resources" | python3 -c "
-import json,sys
-want = '$1'
-for r in json.load(sys.stdin)['StackResourceSummaries']:
-    if r['ResourceType'] == 'AWS::Lambda::Function' and r['LogicalResourceId'].startswith(want):
-        print(r['PhysicalResourceId']); break
-else:
-    sys.exit('no lambda matching ' + want)"
-}
+fn() { python3 "$SMOKE_DIR/stack-lookup.py" "$STACK" "$1"; }
 output() { printf '%s' "$outputs" | python3 -c "import json,sys; print(next(o['OutputValue'] for o in json.load(sys.stdin) if o['OutputKey']=='$1'))"; }
 
 BUCKET=$(output MediaBucketName)

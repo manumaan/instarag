@@ -42,6 +42,7 @@ export class Api extends Construct {
   /** Exposed so the stack can point them at the ingest pipeline. */
   readonly completeUploadFunction: NodejsFunction;
   readonly createFromUrlFunction: NodejsFunction;
+  readonly retryMediaFunction: NodejsFunction;
 
   constructor(scope: Construct, id: string, props: ApiProps) {
     super(scope, id);
@@ -244,6 +245,31 @@ export class Api extends Construct {
     const getThread = makeSearchFn('GetThread', 'get-thread.ts');
     allow(getThread, ['dynamodb:Query'], [storage.messagesTable.tableArn]);
 
+    // Retrying is a real re-run: it clears whatever a half-finished pipeline
+    // left behind, so it needs the same reach as delete plus the pipeline.
+    const retryMedia = makeFn('RetryMedia', 'retry-media.ts', { timeout: Duration.seconds(60) });
+    this.retryMediaFunction = retryMedia;
+    retryMedia.addEnvironment('CAPTION_FACTS_TABLE', storage.captionFactsTable.tableName);
+    // Clearing stale index documents needs the collection endpoint; without it
+    // the OpenSearch client fails with "Missing node(s) option".
+    retryMedia.addEnvironment('SEARCH_ENDPOINT', props.search.endpoint);
+    retryMedia.addEnvironment('SEARCH_INDEX', 'frames');
+    allow(retryMedia, ['dynamodb:GetItem', 'dynamodb:UpdateItem'], [storage.mediaTable.tableArn]);
+    allow(retryMedia, ['dynamodb:Query', 'dynamodb:BatchWriteItem'], [
+      storage.framesTable.tableArn,
+      storage.transcriptSegmentsTable.tableArn,
+    ]);
+    allow(retryMedia, ['dynamodb:DeleteItem'], [storage.captionFactsTable.tableArn]);
+    allow(retryMedia, ['s3:DeleteObject'], [storage.mediaBucket.arnForObjects('media/*')]);
+    retryMedia.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [storage.mediaBucket.bucketArn],
+        conditions: { StringLike: { 's3:prefix': ['media/*'] } },
+      }),
+    );
+    props.search.grantWrite(retryMedia);
+
     const routes: Array<[apigw.HttpMethod, string, NodejsFunction]> = [
       [apigw.HttpMethod.POST, '/uploads', createUpload],
       [apigw.HttpMethod.POST, '/media/{id}/complete', completeUpload],
@@ -251,6 +277,7 @@ export class Api extends Construct {
       [apigw.HttpMethod.GET, '/media', listMedia],
       [apigw.HttpMethod.GET, '/media/{id}', getMedia],
       [apigw.HttpMethod.DELETE, '/media/{id}', deleteMedia],
+      [apigw.HttpMethod.POST, '/media/{id}/retry', retryMedia],
       [apigw.HttpMethod.POST, '/ask', ask],
       [apigw.HttpMethod.GET, '/threads', listThreads],
       [apigw.HttpMethod.GET, '/threads/{id}', getThread],

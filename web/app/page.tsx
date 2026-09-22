@@ -5,7 +5,7 @@ import Link from 'next/link';
 import DropZone from '@/components/DropZone';
 import LensSheet from '@/components/LensSheet';
 import StatusChip from '@/components/StatusChip';
-import { deleteMedia, listMedia, type Media } from '@/lib/api';
+import { deleteMedia, listMedia, retryMedia, type Media } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
 
 const IN_FLIGHT: Media['status'][] = [
@@ -83,6 +83,22 @@ export default function LibraryPage() {
     setCursor(page.cursor);
   }
 
+  /**
+   * Reels fail for reasons that pass: a rate limit clears, a codec gets fixed
+   * by a deploy. Retrying re-runs the pipeline rather than just clearing the
+   * error.
+   */
+  async function retry(id: string) {
+    setItems((prev) => prev.map((m) => (m.id === id ? { ...m, status: 'queued', error: undefined } : m)));
+    try {
+      await retryMedia(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'retry failed');
+    } finally {
+      void refresh();
+    }
+  }
+
   async function remove(id: string) {
     setItems((prev) => prev.filter((m) => m.id !== id));
     try {
@@ -102,9 +118,6 @@ export default function LibraryPage() {
         <button className="ghost small" onClick={() => setLensOpen(true)}>
           Search by screenshot
         </button>
-        <Link href="/connect" className="back">
-          Connect Instagram →
-        </Link>
       </p>
       {lensOpen && <LensSheet onClose={() => setLensOpen(false)} />}
       <DropZone onAdded={(media) => setItems((prev) => [media, ...prev.filter((m) => m.id !== media.id)])} />
@@ -143,9 +156,16 @@ export default function LibraryPage() {
                   <p className="muted small">{new Date(media.created_at).toLocaleString()}</p>
                   {media.error && <p className="error small">{media.error}</p>}
                 </Link>
-                <button className="ghost small" onClick={() => void remove(media.id)} aria-label="Delete">
-                  Delete
-                </button>
+                <div className="row">
+                  {media.status === 'failed' && (
+                    <button className="primary small" onClick={() => void retry(media.id)}>
+                      Retry
+                    </button>
+                  )}
+                  <button className="ghost small" onClick={() => void remove(media.id)} aria-label="Delete">
+                    Delete
+                  </button>
+                </div>
               </article>
             ))}
           </div>

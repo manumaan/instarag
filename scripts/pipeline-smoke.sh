@@ -17,20 +17,12 @@ trap 'rm -rf "$TMP"' EXIT
 
 FFMPEG_IMAGE="mwader/static-ffmpeg:7.1@sha256:a8090df5f5608daef387e1b2e93b98aaacb4d92153ad904e7d715c725724fca4"
 
-resources=$(aws cloudformation list-stack-resources --stack-name "$STACK" --output json)
 outputs=$(aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].Outputs' --output json)
-fn() { printf '%s' "$resources" | python3 -c "
-import json,sys
-for r in json.load(sys.stdin)['StackResourceSummaries']:
-    if r['ResourceType']=='AWS::Lambda::Function' and r['LogicalResourceId'].startswith('$1'):
-        print(r['PhysicalResourceId']); break
-else: sys.exit('no lambda matching $1')"; }
+fn() { python3 "$SMOKE_DIR/stack-lookup.py" "$STACK" "$1"; }
 output() { printf '%s' "$outputs" | python3 -c "import json,sys; print(next(o['OutputValue'] for o in json.load(sys.stdin) if o['OutputKey']=='$1'))"; }
 
-FRAMES_TABLE=$(aws cloudformation list-stack-resources --stack-name "$STACK" \
-  --query "StackResourceSummaries[?starts_with(LogicalResourceId,'StorageFramesTable')].PhysicalResourceId" --output text)
-JOBS_TABLE=$(aws cloudformation list-stack-resources --stack-name "$STACK" \
-  --query "StackResourceSummaries[?starts_with(LogicalResourceId,'StorageJobsTable')].PhysicalResourceId" --output text)
+FRAMES_TABLE=$(python3 "$SMOKE_DIR/stack-lookup.py" "$STACK" "StorageFramesTable" AWS::DynamoDB::Table)
+JOBS_TABLE=$(python3 "$SMOKE_DIR/stack-lookup.py" "$STACK" "StorageJobsTable" AWS::DynamoDB::Table)
 BUCKET=$(output MediaBucketName)
 FN_CREATE_UPLOAD=$(fn ApiCreateUpload); FN_COMPLETE=$(fn ApiCompleteUpload)
 FN_GET=$(fn ApiGetMedia); FN_DELETE=$(fn ApiDeleteMedia); FN_ASK=$(fn ApiAsk)
@@ -92,8 +84,7 @@ done
 echo "  ok   pipeline ran StartJob -> MarkExtracting -> Extract -> MarkReady -> FinishJob"
 
 # The broadcaster is what pushes those transitions to the browser.
-BROADCAST_LOGS=$(aws cloudformation list-stack-resources --stack-name "$STACK" \
-  --query "StackResourceSummaries[?starts_with(LogicalResourceId,'RealtimeWsBroadcastLogs')].PhysicalResourceId" --output text)
+BROADCAST_LOGS=$(python3 "$SMOKE_DIR/stack-lookup.py" "$STACK" RealtimeWsBroadcastLogs AWS::Logs::LogGroup)
 # No --filter-pattern: CloudWatch tokenises on hyphens, so a UUID never matches
 # as a term. Pull the window and grep locally, retrying while logs settle.
 PUSHED=""
@@ -172,8 +163,7 @@ echo "download leg: a URL-sourced item is fetched, then extracted"
 # (yt-dlp in Lambda, the S3 write, the record update, the handoff to
 # extraction) without depending on Instagram. Live reel fetching is checked
 # separately, because only Instagram can tell us whether it will serve us.
-MEDIA_TABLE=$(aws cloudformation list-stack-resources --stack-name "$STACK" \
-  --query "StackResourceSummaries[?starts_with(LogicalResourceId,'StorageMediaTable')].PhysicalResourceId" --output text)
+MEDIA_TABLE=$(python3 "$SMOKE_DIR/stack-lookup.py" "$STACK" "StorageMediaTable" AWS::DynamoDB::Table)
 SOURCE_KEY="media/_smoke-source/clip.mp4"
 aws s3 cp "$TMP/clip.mp4" "s3://$BUCKET/$SOURCE_KEY" --quiet
 SOURCE_URL=$(aws s3 presign "s3://$BUCKET/$SOURCE_KEY" --expires-in 900)
@@ -274,8 +264,7 @@ check "frame rows removed" "$LEFTOVER" 0
 # something the user deleted. The delete must report what it removed.
 check "removed from the vector index" \
   "$([ "$(body "['removedFromIndex']" 2>/dev/null || echo 0)" -gt 0 ] && echo yes || echo no)" yes
-CAPTION_FACTS_TABLE=$(aws cloudformation list-stack-resources --stack-name "$STACK" \
-  --query "StackResourceSummaries[?starts_with(LogicalResourceId,'StorageCaptionFactsTable')].PhysicalResourceId" --output text)
+CAPTION_FACTS_TABLE=$(python3 "$SMOKE_DIR/stack-lookup.py" "$STACK" "StorageCaptionFactsTable" AWS::DynamoDB::Table)
 check "caption facts removed" \
   "$(aws dynamodb get-item --table-name "$CAPTION_FACTS_TABLE" --key "{\"media_id\":{\"S\":\"$MEDIA_ID\"}}" --query 'Item' --output text)" None
 

@@ -75,7 +75,12 @@ export class ReelLensStack extends Stack {
 
     // Every ingest route kicks off the pipeline: a completed upload and an API
     // sync go straight to extraction, a pasted permalink is downloaded first.
-    for (const fn of [api.completeUploadFunction, api.createFromUrlFunction, connected.syncFunction]) {
+    for (const fn of [
+      api.completeUploadFunction,
+      api.createFromUrlFunction,
+      api.retryMediaFunction,
+      connected.syncFunction,
+    ]) {
       pipeline.stateMachine.grantStartExecution(fn);
       fn.addEnvironment('STATE_MACHINE_ARN', pipeline.stateMachine.stateMachineArn);
     }

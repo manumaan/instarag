@@ -86,12 +86,24 @@ aws secretsmanager put-secret-value \
   --secret-string 'YOUR_APP_SECRET'
 ```
 
-Then open `/connect` in the app and press Connect. Until both the id and secret are in
-place the page says so rather than failing.
+The `/connect` screens were removed on request, so there is currently no button for this —
+the endpoints are still deployed and can be driven directly, and restoring the UI means
+re-adding `web/app/connect/`.
 
 The long-lived token lasts 60 days, is stored encrypted under a customer-managed KMS key,
 and is refreshed daily by a scheduled Lambda once it is old enough to be refreshed — letting
 it lapse would mean re-authorising by hand.
+
+## Retrying
+
+A failed reel gets a Retry button, on its library tile and its detail screen. Failures here
+are often temporary: Instagram's anonymous rate limit clears on its own, and a codec the
+extractor choked on may be fixed by the next deploy.
+
+Retry is a real re-run. Anything a half-finished pipeline left behind — frames, transcript
+segments, caption facts, index documents — is cleared first, so one run's output cannot mix
+with another's. A pasted permalink is fetched again; an uploaded file keeps its original,
+since there is no other copy of it.
 
 ## Speed
 
@@ -285,6 +297,7 @@ All routes sit behind the Cognito JWT authorizer and take the **id token** in `a
 | `GET /media` | Newest-first library listing, `?limit` and `?cursor` |
 | `GET /media/{id}` | Record, presigned playback URL, keyframes |
 | `DELETE /media/{id}` | Remove the record, its frames and its S3 objects |
+| `POST /media/{id}/retry` | Run the pipeline again for a reel that failed |
 | `POST /ask` | Ask a question; `mediaId` scopes it to one reel, omit it for the library |
 | `GET /threads` | Ask threads, newest first |
 | `GET /threads/{id}` | One thread's turns, with their citations |

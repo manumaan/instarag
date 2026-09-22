@@ -107,6 +107,20 @@ export const getMedia = (id: string) => call<MediaDetail>(`/media/${id}`);
 
 export const deleteMedia = (id: string) => call<{ deleted: string }>(`/media/${id}`, { method: 'DELETE' });
 
+export interface RetryResult {
+  mediaId: string;
+  status: string;
+  /** true when the video will be fetched from Instagram again. */
+  refetches: boolean;
+  framesRemoved: number;
+  segmentsRemoved: number;
+  removedFromIndex: number;
+}
+
+/** Run the pipeline again for a reel that failed. */
+export const retryMedia = (id: string) =>
+  call<RetryResult>(`/media/${id}/retry`, { method: 'POST' });
+
 export const addFromUrl = (url: string) =>
   call<{ mediaId: string; media: Media }>('/media/url', {
     method: 'POST',
@@ -256,6 +270,14 @@ function putWithProgress(
     xhr.send(file);
   });
 }
+
+/*
+ * Connected mode's client, kept deliberately.
+ *
+ * The Connect Instagram screens were removed at MJ's request, but the phase 6
+ * endpoints are still deployed — so these stay as the documented client for
+ * them. Restoring the option means re-adding app/connect/, nothing more.
+ */
 
 export interface ConnectionStatus {
   connected: boolean;

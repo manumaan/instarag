@@ -24,7 +24,7 @@ test('every API route is authorised by the user pool', () => {
   const routes = Object.entries(template.findResources('AWS::ApiGatewayV2::Route')).filter(
     ([, route]) => !String(route.Properties.RouteKey).startsWith('$'),
   );
-  assert.equal(routes.length, 17);
+  assert.equal(routes.length, 18);
   for (const [name, route] of routes) {
     assert.equal(route.Properties.AuthorizationType, 'JWT', `${name} must require a JWT`);
   }
@@ -151,7 +151,11 @@ test('only the ingest handlers may start the pipeline, and only that one', () =>
   // Three ingest routes start the pipeline: completed upload, pasted permalink,
   // and a connected-mode sync.
   const starts = statements.filter((s) => [s.Action].flat().includes('states:StartExecution'));
-  assert.equal(starts.length, 3, 'only the three ingest handlers may start the pipeline');
+  assert.equal(
+    starts.length,
+    4,
+    'only the ingest handlers and retry may start the pipeline',
+  );
   for (const statement of starts) {
     assert.ok(
       !JSON.stringify(statement.Resource).includes('"*"'),
@@ -450,4 +454,50 @@ test('a re-pasted reel is found by permalink rather than downloaded again', () =
     indexes.some((i) => i.IndexName === 'byPermalink'),
     'without this index, every paste of the same reel costs another anonymous download',
   );
+});
+
+test('retry can clear a half-finished run and start the pipeline again', () => {
+  const template = synth();
+  const routes = Object.values(template.findResources('AWS::ApiGatewayV2::Route')).map(
+    (r) => r.Properties.RouteKey,
+  );
+  assert.ok(
+    routes.includes('POST /media/{id}/retry'),
+    'a failed reel needs a way back through the pipeline',
+  );
+
+  // It must be able to remove index documents, or a retried reel would end up
+  // cited twice: once from the old run and once from the new.
+  const policy = Object.values(template.findResources('AWS::OpenSearchServerless::AccessPolicy'))[0];
+  const flattened = JSON.stringify(policy.Properties.Policy);
+  assert.ok(flattened.includes('RetryMedia'), 'retry needs write access to clear stale documents');
+});
+
+test('every handler that purges the index has the collection endpoint', () => {
+  const template = synth();
+  // Retry and delete both clear stale documents. A handler granted
+  // aoss:APIAccessAll but given no SEARCH_ENDPOINT fails at runtime with
+  // "Missing node(s) option" — which is how this was found.
+  const functions = Object.entries(template.findResources('AWS::Lambda::Function'));
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+
+  const rolesWithAoss = new Set(
+    policies
+      .filter((policy) =>
+        (policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[] }>).some((s) =>
+          [s.Action].flat().includes('aoss:APIAccessAll'),
+        ),
+      )
+      .flatMap((policy) => (policy.Properties.Roles ?? []).map((r: unknown) => JSON.stringify(r))),
+  );
+
+  for (const [name, fn] of functions) {
+    const role = JSON.stringify(fn.Properties.Role);
+    const roleRef = role.replace(/\{"Fn::GetAtt":\["(.+?)","Arn"\]\}/, '{"Ref":"$1"}');
+    if (!rolesWithAoss.has(roleRef)) continue;
+    assert.ok(
+      fn.Properties.Environment?.Variables?.SEARCH_ENDPOINT,
+      `${name} can call the index but has no SEARCH_ENDPOINT`,
+    );
+  }
 });

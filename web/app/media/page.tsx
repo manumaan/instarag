@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import StatusChip from '@/components/StatusChip';
 import AskPanel from '@/components/AskPanel';
 import LensSheet from '@/components/LensSheet';
-import { getMedia, type MediaDetail } from '@/lib/api';
+import { getMedia, retryMedia, type MediaDetail } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
 
 const IN_FLIGHT = ['awaiting_upload', 'queued', 'downloading', 'extracting', 'analysing', 'indexing'];
@@ -23,6 +23,7 @@ function ReelDetail() {
   const [seekTo, setSeekTo] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [lensFrame, setLensFrame] = useState<number | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   // A citation from library-wide Ask arrives as ?t=<ms>.
   useEffect(() => {
@@ -269,6 +270,26 @@ function ReelDetail() {
               setSelected(citation.ts_ms);
             }}
           />
+
+          {media.status === 'failed' && (
+            <>
+              <h2>This reel failed</h2>
+              {media.error && <pre className="small">{media.error.slice(0, 600)}</pre>}
+              <button
+                className="primary"
+                disabled={retrying}
+                onClick={() => {
+                  setRetrying(true);
+                  retryMedia(media.id)
+                    .then(() => refresh())
+                    .catch(() => undefined)
+                    .finally(() => setRetrying(false));
+                }}
+              >
+                {retrying ? 'Retrying…' : 'Retry'}
+              </button>
+            </>
+          )}
 
           <h2>Details</h2>
           <dl className="meta">
