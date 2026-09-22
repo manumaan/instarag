@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import StatusChip from '@/components/StatusChip';
 import AskPanel from '@/components/AskPanel';
 import LensSheet from '@/components/LensSheet';
@@ -14,9 +14,9 @@ const IN_FLIGHT = ['awaiting_upload', 'queued', 'downloading', 'extracting', 'an
 const POLL_MS = 30_000;
 
 /** Reel detail: player, keyframe filmstrip, caption panel with copy actions. */
-export default function ReelDetailPage() {
-  const { id } = useParams<{ id: string }>();
+function ReelDetail() {
   const searchParams = useSearchParams();
+  const id = searchParams.get('id') ?? '';
   const [detail, setDetail] = useState<MediaDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -34,6 +34,7 @@ export default function ReelDetailPage() {
   }, [searchParams]);
 
   const refresh = useCallback(async () => {
+    if (!id) return;
     try {
       setDetail(await getMedia(id));
       setError(null);
@@ -301,5 +302,20 @@ export default function ReelDetailPage() {
         <LensSheet frame={{ mediaId: media.id, tsMs: lensFrame }} onClose={() => setLensFrame(null)} />
       )}
     </main>
+  );
+}
+
+/** useSearchParams needs a boundary in a statically exported page. */
+export default function ReelDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="page">
+          <p className="muted">Loading…</p>
+        </main>
+      }
+    >
+      <ReelDetail />
+    </Suspense>
   );
 }

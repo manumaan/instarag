@@ -85,6 +85,9 @@ test('no handler policy grants a wildcard action or an unscoped table', () => {
 test('handlers only see table and bucket names, never credentials', () => {
   const template = synth();
   for (const [name, fn] of Object.entries(template.findResources('AWS::Lambda::Function'))) {
+    // CDK's own custom-resource providers (bucket deployment, auto-delete) set
+    // their own env vars; this check is about the handlers we write.
+    if (name.startsWith('Custom')) continue;
     const env = fn.Properties.Environment?.Variables ?? {};
     for (const key of Object.keys(env)) {
       assert.ok(
@@ -340,4 +343,46 @@ test('no handler takes the search key through its environment', () => {
       }
     }
   }
+});
+
+test('the site bucket is private and only reachable through CloudFront', () => {
+  const template = synth();
+  template.resourceCountIs('AWS::CloudFront::Distribution', 1);
+  const buckets = Object.values(template.findResources('AWS::S3::Bucket'));
+  for (const bucket of buckets) {
+    assert.deepEqual(
+      bucket.Properties.PublicAccessBlockConfiguration,
+      {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+      'no bucket may be public, including the site bucket',
+    );
+  }
+  // Origin Access Control, not a public bucket or a legacy OAI.
+  template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+  const distribution = Object.values(template.findResources('AWS::CloudFront::Distribution'))[0];
+  const config = distribution.Properties.DistributionConfig;
+  assert.equal(config.DefaultCacheBehavior.ViewerProtocolPolicy, 'redirect-to-https');
+  assert.equal(config.DefaultRootObject, 'index.html');
+});
+
+test('sign-in and the API both accept the CloudFront origin', () => {
+  const template = synth();
+  const client = Object.values(template.findResources('AWS::Cognito::UserPoolClient'))[0];
+  const callbacks = JSON.stringify(client.Properties.CallbackURLs);
+  // The distribution domain is a token, so it renders as a Join/GetAtt.
+  assert.ok(
+    callbacks.includes('DomainName') || callbacks.includes('Fn::Join'),
+    'the CloudFront domain must be a Hosted UI callback, or sign-in breaks on the deployed site',
+  );
+
+  const api = Object.values(template.findResources('AWS::ApiGatewayV2::Api'))[0];
+  const cors = JSON.stringify(api.Properties.CorsConfiguration ?? {});
+  assert.ok(
+    cors.includes('DomainName') || cors.includes('Fn::Join'),
+    'the API must allow the CloudFront origin, or every request from the deployed site is blocked',
+  );
 });

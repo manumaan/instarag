@@ -6,6 +6,7 @@ import { Api } from './api';
 import { Pipeline } from './pipeline';
 import { Realtime } from './realtime';
 import { Search } from './search';
+import { Hosting } from './hosting';
 
 export interface ReelLensStackProps extends StackProps {
   readonly webOrigins: string[];
@@ -26,20 +27,26 @@ export class ReelLensStack extends Stack {
   constructor(scope: Construct, id: string, props: ReelLensStackProps) {
     super(scope, id, props);
 
+    // Hosting comes first: Cognito's callback URLs and the API's CORS list
+    // both need the CloudFront domain, and nothing flows the other way, so
+    // there is no cycle.
+    const hosting = new Hosting(this, 'Hosting');
+    const webOrigins = [...props.webOrigins, hosting.origin];
+
     const storage = new Storage(this, 'Storage', {
-      webOrigins: props.webOrigins,
+      webOrigins,
       retainData: props.retainData,
       retentionDays: props.retentionDays,
     });
 
-    const auth = new Auth(this, 'Auth', { webOrigins: props.webOrigins });
+    const auth = new Auth(this, 'Auth', { webOrigins });
 
     const search = new Search(this, 'Search', { maxOcu: props.maxOcu });
 
     const api = new Api(this, 'Api', {
       storage,
       auth,
-      webOrigins: props.webOrigins,
+      webOrigins,
       search,
       analysisModel: props.analysisModel,
       embeddingModel: props.embeddingModel,
@@ -71,5 +78,6 @@ export class ReelLensStack extends Stack {
     new CfnOutput(this, 'StateMachineArn', { value: pipeline.stateMachine.stateMachineArn });
     new CfnOutput(this, 'AnalysisModel', { value: props.analysisModel });
     new CfnOutput(this, 'WebSearchSecretArn', { value: api.webSearchSecret.secretArn });
+    new CfnOutput(this, 'SiteBucketName', { value: hosting.bucket.bucketName });
   }
 }

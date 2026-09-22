@@ -183,7 +183,7 @@ export default function LensSheet({
                   <Link
                     key={`${match.media_id}:${match.ts_ms}`}
                     className="lens-hit"
-                    href={`/media/${match.media_id}?t=${match.ts_ms}`}
+                    href={`/media?id=${match.media_id}&t=${match.ts_ms}`}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     {match.url && <img src={match.url} alt={match.description} />}

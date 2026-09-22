@@ -1,8 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Phase 1 runs `next dev` against the deployed API. CloudFront + S3 hosting
-  // (static export) comes with the hosting work, not the skeleton.
+  // Static export: the app is served from S3 behind CloudFront with no server
+  // side, so every route has to be a file that exists at build time.
+  output: 'export',
+  // No Next image optimiser without a server; frames are already resized to
+  // 720px by the extractor.
+  images: { unoptimized: true },
+  trailingSlash: true,
 };
 
 export default nextConfig;

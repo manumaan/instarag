@@ -98,7 +98,7 @@ export default function LibraryPage() {
           <div className="grid">
             {items.map((media) => (
               <article key={media.id} className="card tile">
-                <Link href={`/media/${media.id}`} className="tile-body">
+                <Link href={`/media?id=${media.id}`} className="tile-body">
                   <div className="tile-head">
                     <StatusChip media={media} />
                     <span className="muted small">{media.type}</span>

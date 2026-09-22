@@ -19,7 +19,7 @@ expected fix when Instagram changes its markup and downloads start failing.
 ## Layout
 
 ```
-infra/           AWS CDK app (TypeScript) — S3, DynamoDB, Cognito, HTTP API, pipeline, WebSocket
+infra/           AWS CDK app (TypeScript) — storage, auth, API, pipeline, index, hosting
 infra/extract/   Keyframe extraction Lambda: container image with static ffmpeg
 web/             Next.js app — Library and Reel detail screens
 scripts/         write-web-env.sh (env from stack outputs) + two end-to-end test scripts
@@ -109,15 +109,27 @@ aws cognito-idp admin-create-user \
   --desired-delivery-mediums EMAIL
 ```
 
-Then point the web app at the deployed stack and start it:
+Then deploy the web app and open it:
 
 ```bash
-./scripts/write-web-env.sh
-cd web && npm install && npm run dev
+cd web && npm install
+cd .. && ./scripts/deploy-web.sh
 ```
 
-Open http://localhost:3000 and sign in. Cognito will ask you to replace the temporary
-password on first sign-in.
+That writes `web/.env.local` from the stack outputs, builds the static export, uploads it to
+S3 and invalidates the CloudFront cache. It prints the site URL when it finishes. Sign in
+with the owner account; Cognito will ask you to replace the temporary password the first
+time.
+
+For local development instead, `./scripts/write-web-env.sh && npm --prefix web run dev`
+serves the same app on http://localhost:3000, which is also an allowed sign-in origin.
+
+### A note on the reel URL
+
+Reel detail is `/media?id=<uuid>`, not `/media/<uuid>`. The app is a static export with no
+server, and a static export cannot serve a route whose values only exist at runtime — reel
+ids are created on ingest. Running a server just for prettier URLs was not worth the
+infrastructure.
 
 ## Ask
 

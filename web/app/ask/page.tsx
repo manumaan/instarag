@@ -13,7 +13,7 @@ export default function AskPage() {
       <div className="card">
         <AskPanel
           renderCitation={(citation) => (
-            <Link className="evidence" href={`/media/${citation.media_id}?t=${citation.ts_ms}`}>
+            <Link className="evidence" href={`/media?id=${citation.media_id}&t=${citation.ts_ms}`}>
               {citation.media_id.slice(0, 8)} @ {(citation.ts_ms / 1000).toFixed(1)}s
             </Link>
           )}
