@@ -6,6 +6,7 @@ import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as path from 'node:path';
 import type { Auth } from './auth';
@@ -33,6 +34,8 @@ const SEARCH_LAMBDA_DIR = path.join(__dirname, '..', 'lambda', 'search');
  */
 export class Api extends Construct {
   readonly httpApi: apigw.HttpApi;
+  /** Holds the Brave Search API key. Created empty; MJ sets the value. */
+  readonly webSearchSecret: secretsmanager.Secret;
   /** Exposed so the stack can point them at the ingest pipeline. */
   readonly completeUploadFunction: NodejsFunction;
   readonly createFromUrlFunction: NodejsFunction;
@@ -190,6 +193,15 @@ export class Api extends Construct {
     const lensUpload = makeSearchFn('LensUpload', 'lens.ts', 'upload');
     allow(lensUpload, ['s3:PutObject'], [storage.mediaBucket.arnForObjects('lens/*')]);
 
+    /**
+     * The key is never in code, env vars or the template: CDK creates the
+     * secret with a generated placeholder and the real value is put in out of
+     * band, so nothing here can leak it.
+     */
+    this.webSearchSecret = new secretsmanager.Secret(this, 'WebSearchApiKey', {
+      description: 'Brave Search API key for Lens web search. Set with: aws secretsmanager put-secret-value',
+    });
+
     const lensSimilar = makeSearchFn('LensSimilar', 'lens.ts', 'similar');
     allow(lensSimilar, ['s3:GetObject'], [
       storage.mediaBucket.arnForObjects('lens/*'),
@@ -200,6 +212,19 @@ export class Api extends Construct {
       `arn:aws:bedrock:*::foundation-model/${props.embeddingModel}`,
     ]);
     props.search.grantRead(lensSimilar);
+
+    const lensWeb = makeSearchFn('LensWeb', 'web-lens.ts');
+    lensWeb.addEnvironment('SEARCH_SECRET_ARN', this.webSearchSecret.secretArn);
+    this.webSearchSecret.grantRead(lensWeb);
+    allow(lensWeb, ['s3:GetObject'], [
+      storage.mediaBucket.arnForObjects('lens/*'),
+      storage.mediaBucket.arnForObjects('media/*'),
+    ]);
+    allow(lensWeb, ['dynamodb:Query'], [storage.framesTable.tableArn]);
+    allow(lensWeb, ['bedrock:InvokeModel'], [
+      `arn:aws:bedrock:${Stack.of(this).region}:${Stack.of(this).account}:inference-profile/${props.analysisModel}`,
+      `arn:aws:bedrock:*::foundation-model/${props.analysisModel.replace(/^(us|global)\./, '')}`,
+    ]);
 
     const listThreads = makeSearchFn('ListThreads', 'list-threads.ts');
     allow(listThreads, ['dynamodb:Query'], [`${storage.threadsTable.tableArn}/index/byCreatedAt`]);
@@ -219,6 +244,7 @@ export class Api extends Construct {
       [apigw.HttpMethod.GET, '/threads/{id}', getThread],
       [apigw.HttpMethod.POST, '/lens/uploads', lensUpload],
       [apigw.HttpMethod.POST, '/lens/similar', lensSimilar],
+      [apigw.HttpMethod.POST, '/lens/web', lensWeb],
     ];
 
     for (const [method, routePath, fn] of routes) {

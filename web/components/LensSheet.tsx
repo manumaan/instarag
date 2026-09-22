@@ -2,7 +2,13 @@
 
 import { useRef, useState } from 'react';
 import Link from 'next/link';
-import { findSimilar, lensUpload, type SimilarMatch } from '@/lib/api';
+import {
+  findSimilar,
+  lensUpload,
+  searchTheWeb,
+  type SimilarMatch,
+  type WebLensAnswer,
+} from '@/lib/api';
 
 const ACCEPT = 'image/jpeg,image/png,image/webp';
 
@@ -22,15 +28,20 @@ export default function LensSheet({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [matches, setMatches] = useState<SimilarMatch[] | null>(null);
+  const [web, setWeb] = useState<WebLensAnswer | null>(null);
+  const [queryKey, setQueryKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [queryPreview, setQueryPreview] = useState<string | null>(null);
 
-  async function search(run: () => Promise<{ matches: SimilarMatch[] }>) {
+  /** The query is either an uploaded screenshot or the frame we were opened on. */
+  const target = () => (queryKey ? { s3Key: queryKey } : frame ? { mediaId: frame.mediaId, tsMs: frame.tsMs } : null);
+
+  async function run<T>(work: () => Promise<T>, apply: (result: T) => void) {
     setBusy(true);
     setError(null);
     try {
-      setMatches((await run()).matches);
+      apply(await work());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'the search failed');
     } finally {
@@ -40,11 +51,42 @@ export default function LensSheet({
 
   async function onFile(file: File) {
     setQueryPreview(URL.createObjectURL(file));
-    await search(async () => {
-      const { s3Key } = await lensUpload(file);
-      return findSimilar({ s3Key });
-    });
+    setMatches(null);
+    setWeb(null);
+    await run(
+      async () => {
+        const { s3Key } = await lensUpload(file);
+        setQueryKey(s3Key);
+        return findSimilar({ s3Key });
+      },
+      (result) => setMatches(result.matches),
+    );
   }
+
+  const actions = (
+    <div className="row">
+      <button
+        className="primary small"
+        disabled={busy || !target()}
+        onClick={() => {
+          setWeb(null);
+          void run(() => findSimilar(target()!), (r) => setMatches(r.matches));
+        }}
+      >
+        Find similar
+      </button>
+      <button
+        className="ghost small"
+        disabled={busy || !target()}
+        onClick={() => {
+          setMatches(null);
+          void run(() => searchTheWeb(target()!), setWeb);
+        }}
+      >
+        Search the web
+      </button>
+    </div>
+  );
 
   return (
     <div className="sheet-backdrop" onClick={onClose} role="presentation">
@@ -93,14 +135,43 @@ export default function LensSheet({
           </>
         )}
 
-        {frame && !matches && !busy && (
-          <button className="primary" onClick={() => void search(() => findSimilar(frame))}>
-            Find similar frames
-          </button>
-        )}
+        {target() && actions}
 
         {busy && <p className="muted small">Searching…</p>}
         {error && <p className="error small">{error}</p>}
+
+        {web && (
+          <div className="web-lens">
+            <p className="muted small">
+              Searched for <strong>{web.query}</strong>
+            </p>
+            <div className="row">
+              {web.entities.map((entity, i) => (
+                <span
+                  key={i}
+                  className={`chip${entity.read_from_image ? '' : ' chip-guess'}`}
+                  title={entity.read_from_image ? 'read from the frame' : 'inferred, not read'}
+                >
+                  {entity.value}
+                </span>
+              ))}
+            </div>
+            <p className={web.answered ? undefined : 'muted'}>{web.summary}</p>
+            {web.results.length > 0 && (
+              <ul className="web-results">
+                {web.results.map((result) => (
+                  <li key={result.url}>
+                    <a href={result.url} target="_blank" rel="noreferrer noopener">
+                      {result.title}
+                    </a>
+                    {web.citedUrls.includes(result.url) && <span className="chip small">cited</span>}
+                    <span className="muted small"> {result.description.slice(0, 120)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {matches && (
           <>

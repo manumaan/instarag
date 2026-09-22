@@ -182,6 +182,37 @@ export const findSimilar = (query: { s3Key: string } | { mediaId: string; tsMs: 
     body: JSON.stringify(query),
   });
 
+export interface LensEntity {
+  kind: 'product' | 'brand' | 'place' | 'dish' | 'on_screen_text' | 'other';
+  value: string;
+  /** true only when the value is legible text in the frame, not an inference. */
+  read_from_image: boolean;
+}
+
+export interface WebResult {
+  title: string;
+  url: string;
+  description: string;
+}
+
+export interface WebLensAnswer {
+  query: string;
+  entities: LensEntity[];
+  /** false when no search API key has been set. */
+  configured: boolean;
+  answered: boolean;
+  summary: string;
+  results: WebResult[];
+  citedUrls: string[];
+}
+
+export const searchTheWeb = (query: { s3Key: string } | { mediaId: string; tsMs: number }) =>
+  call<WebLensAnswer>('/lens/web', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(query),
+  });
+
 export const getThread = (id: string) =>
   call<{ threadId: string; messages: ThreadMessage[] }>(`/threads/${id}`);
 

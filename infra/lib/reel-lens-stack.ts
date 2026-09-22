@@ -70,5 +70,6 @@ export class ReelLensStack extends Stack {
     new CfnOutput(this, 'WsUrl', { value: realtime.url });
     new CfnOutput(this, 'StateMachineArn', { value: pipeline.stateMachine.stateMachineArn });
     new CfnOutput(this, 'AnalysisModel', { value: props.analysisModel });
+    new CfnOutput(this, 'WebSearchSecretArn', { value: api.webSearchSecret.secretArn });
   }
 }

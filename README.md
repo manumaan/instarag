@@ -166,8 +166,25 @@ refuses any key outside that prefix, so it cannot be turned into a reader for st
 Measured on a real screenshot: the matching shot came back at 0.94 with the next result at
 0.87 — the gap is what makes the top hit meaningful rather than just first.
 
-The second Lens action, searching the web for what is in a frame, is not built: it needs a
-web search API chosen and an API key, and Bedrock offers no server-side web search.
+The second action, **search the web**, identifies what is in the frame and looks it up:
+Claude extracts entities under a schema, Brave Web Search runs the query, and Claude
+summarises the results. The summary may only use the results returned, and a cited url is
+dropped unless the search actually returned it — so this reports what the web says, not
+what the model remembers. Entities are marked by whether they were *read* from the frame or
+inferred, the same distinction the analysis pass makes for places.
+
+It needs a Brave API key, which is not in this repo and never will be. Create one at
+brave.com/search/api, then put it into the secret the stack created:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id "$(aws cloudformation describe-stacks --stack-name ReelLens \
+    --query "Stacks[0].Outputs[?OutputKey=='WebSearchSecretArn'].OutputValue" --output text)" \
+  --secret-string 'YOUR_BRAVE_API_KEY'
+```
+
+Until then the endpoint returns the entities and the query it would have run, flagged
+`configured: false`, instead of failing.
 
 ## Checks
 
@@ -207,6 +224,7 @@ All routes sit behind the Cognito JWT authorizer and take the **id token** in `a
 | `GET /threads/{id}` | One thread's turns, with their citations |
 | `POST /lens/uploads` | Presigned PUT for a screenshot to search with |
 | `POST /lens/similar` | Nearest frames to a screenshot, or to a frame already indexed |
+| `POST /lens/web` | Identify what is in a frame, then look it up on the web |
 
 The WebSocket endpoint takes the same id token as `?token=…`, because a WebSocket
 handshake cannot carry an authorization header.

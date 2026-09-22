@@ -23,7 +23,7 @@ test('every API route is authorised by the user pool', () => {
   const routes = Object.entries(template.findResources('AWS::ApiGatewayV2::Route')).filter(
     ([, route]) => !String(route.Properties.RouteKey).startsWith('$'),
   );
-  assert.equal(routes.length, 11);
+  assert.equal(routes.length, 12);
   for (const [name, route] of routes) {
     assert.equal(route.Properties.AuthorizationType, 'JWT', `${name} must require a JWT`);
   }
@@ -89,7 +89,7 @@ test('handlers only see table and bucket names, never credentials', () => {
     for (const key of Object.keys(env)) {
       assert.ok(
         // Resource identifiers only — never a secret, key or token.
-        /^(MEDIA_BUCKET|MEDIA_TABLE|FRAMES_TABLE|JOBS_TABLE|CONNECTIONS_TABLE|CAPTION_FACTS_TABLE|TRANSCRIPT_SEGMENTS_TABLE|STATE_MACHINE_ARN|USER_POOL_ID|USER_POOL_CLIENT_ID|WS_MANAGEMENT_ENDPOINT|SCENE_THRESHOLD|MAX_FRAMES|PHASH_THRESHOLD|MAX_DOWNLOAD_BYTES|YT_DLP_PATH|HOME|XDG_CACHE_HOME|ANALYSIS_MODEL_ID|ANALYSIS_EFFORT|ANALYSIS_MAX_TOKENS|THREADS_TABLE|MESSAGES_TABLE|SEARCH_ENDPOINT|SEARCH_INDEX|EMBEDDING_MODEL_ID|EMBEDDING_DIMENSION|AWS_NODEJS_CONNECTION_REUSE_ENABLED)$/.test(
+        /^(MEDIA_BUCKET|MEDIA_TABLE|FRAMES_TABLE|JOBS_TABLE|CONNECTIONS_TABLE|CAPTION_FACTS_TABLE|TRANSCRIPT_SEGMENTS_TABLE|STATE_MACHINE_ARN|USER_POOL_ID|USER_POOL_CLIENT_ID|WS_MANAGEMENT_ENDPOINT|SCENE_THRESHOLD|MAX_FRAMES|PHASH_THRESHOLD|MAX_DOWNLOAD_BYTES|YT_DLP_PATH|HOME|XDG_CACHE_HOME|ANALYSIS_MODEL_ID|SEARCH_SECRET_ARN|ANALYSIS_EFFORT|ANALYSIS_MAX_TOKENS|THREADS_TABLE|MESSAGES_TABLE|SEARCH_ENDPOINT|SEARCH_INDEX|EMBEDDING_MODEL_ID|EMBEDDING_DIMENSION|AWS_NODEJS_CONNECTION_REUSE_ENABLED)$/.test(
           key,
         ),
         `${name} has unexpected env var ${key}`,
@@ -202,8 +202,8 @@ test('Bedrock access is invoke-only and limited to named models', () => {
   // vision pass, the embedding stage, Ask, and Lens find-similar.
   assert.equal(
     invokes.length,
-    4,
-    'only the analysis, indexing, Ask and Lens handlers may call Bedrock',
+    5,
+    'only the analysis, indexing, Ask and two Lens handlers may call Bedrock',
   );
   for (const statement of invokes) {
     assert.deepEqual(
@@ -305,4 +305,39 @@ test('Lens query uploads are separate from media and expire', () => {
       ]),
     },
   });
+});
+
+test('the web search key lives in Secrets Manager, not in the template', () => {
+  const template = synth();
+  template.resourceCountIs('AWS::SecretsManager::Secret', 1);
+  const secret = Object.values(template.findResources('AWS::SecretsManager::Secret'))[0];
+  // No literal value anywhere: CDK generates a placeholder and the real key is
+  // put in out of band.
+  assert.ok(!('SecretString' in secret.Properties), 'a key must never be in the template');
+
+  const statements = Object.values(template.findResources('AWS::IAM::Policy')).flatMap(
+    (policy) => policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[] }>,
+  );
+  const readers = statements.filter((s) =>
+    [s.Action].flat().some((a) => String(a).startsWith('secretsmanager:GetSecretValue')),
+  );
+  assert.equal(readers.length, 1, 'only the web search handler may read the key');
+});
+
+test('no handler takes the search key through its environment', () => {
+  const template = synth();
+  for (const [name, fn] of Object.entries(template.findResources('AWS::Lambda::Function'))) {
+    const env = fn.Properties.Environment?.Variables ?? {};
+    for (const [key, value] of Object.entries(env)) {
+      const rendered = JSON.stringify(value);
+      assert.ok(
+        !/BRAVE|SEARCH_API_KEY|SUBSCRIPTION_TOKEN/i.test(key),
+        `${name} carries what looks like a key in ${key}`,
+      );
+      // The ARN is fine; the value must not be resolved into the env.
+      if (key === 'SEARCH_SECRET_ARN') {
+        assert.ok(rendered.includes('Ref') || rendered.includes('secret'), `${name} SEARCH_SECRET_ARN looks wrong`);
+      }
+    }
+  }
 });
