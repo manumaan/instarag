@@ -29,6 +29,30 @@ export class Hosting extends Construct {
       autoDeleteObjects: true,
     });
 
+    /**
+     * CloudFront's defaultRootObject only resolves "/". Against a private S3
+     * origin nothing maps "/ask/" to "ask/index.html", so every page except the
+     * homepage 404s. This rewrites directory-style paths to the file the export
+     * actually wrote, and leaves anything with an extension alone so
+     * /_next/static/... still resolves.
+     */
+    const rewriteToIndex = new cloudfront.Function(this, 'RewriteToIndex', {
+      comment: 'Map directory paths to their index.html',
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  var uri = request.uri;
+  if (uri.endsWith('/')) {
+    request.uri = uri + 'index.html';
+  } else if (!uri.split('/').pop().includes('.')) {
+    request.uri = uri + '/index.html';
+  }
+  return request;
+}
+      `),
+    });
+
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: 'Reel Lens web app',
       defaultRootObject: 'index.html',
@@ -38,6 +62,9 @@ export class Hosting extends Construct {
         allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         compress: true,
+        functionAssociations: [
+          { function: rewriteToIndex, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+        ],
       },
       // The export writes 404.html; without this a bad path returns S3's XML.
       errorResponses: [

@@ -386,3 +386,16 @@ test('sign-in and the API both accept the CloudFront origin', () => {
     'the API must allow the CloudFront origin, or every request from the deployed site is blocked',
   );
 });
+
+test('directory paths are rewritten to index.html, or every page but / 404s', () => {
+  const template = synth();
+  template.resourceCountIs('AWS::CloudFront::Function', 1);
+  const fn = Object.values(template.findResources('AWS::CloudFront::Function'))[0];
+  const code = fn.Properties.FunctionCode as string;
+  assert.match(code, /index\.html/, 'the function must rewrite to index.html');
+
+  const distribution = Object.values(template.findResources('AWS::CloudFront::Distribution'))[0];
+  const associations = distribution.Properties.DistributionConfig.DefaultCacheBehavior.FunctionAssociations;
+  assert.equal(associations.length, 1, 'the rewrite must actually be attached to the behaviour');
+  assert.equal(associations[0].EventType, 'viewer-request');
+});
