@@ -8,7 +8,7 @@ yt-dlp; everything then runs through keyframe extraction on ingest, with progres
 to the browser over a WebSocket, and lands on the reel detail screen as a filmstrip.
 Each reel then gets a Claude vision pass that writes per-frame descriptions, verbatim OCR,
 and the places it can actually read off the signage, then gets embedded into a vector
-index so you can ask questions about it. Lens is the remaining phase.
+index so you can ask questions about it, or find it again from a screenshot.
 
 Downloading public reels is unauthenticated: no IG account, no password, no cookies. It
 does violate Meta's ToS, and Instagram may refuse requests from datacenter IP ranges. The
@@ -152,6 +152,23 @@ Deleting a reel removes its documents from the index as well as its rows and obj
 otherwise Ask would keep citing a reel that is gone. That delete is idempotent: if it fails
 halfway, calling it again finishes the job rather than reporting the media as missing.
 
+## Lens
+
+Drop a screenshot and Lens finds it in your library. It works without a second index:
+the frame vectors came from Titan Multimodal applied to the images themselves, so a query
+screenshot embeds into the same space and a kNN search is all that is needed. From a frame
+already in the library it skips embedding altogether and reuses the stored vector.
+
+A query image is a question, not a reel: it is presigned into a separate `lens/` prefix,
+never becomes a media record, and expires after a day on a lifecycle rule. The endpoint
+refuses any key outside that prefix, so it cannot be turned into a reader for stored reels.
+
+Measured on a real screenshot: the matching shot came back at 0.94 with the next result at
+0.87 — the gap is what makes the top hit meaningful rather than just first.
+
+The second Lens action, searching the web for what is in a frame, is not built: it needs a
+web search API chosen and an API key, and Bedrock offers no server-side web search.
+
 ## Checks
 
 ```bash
@@ -188,6 +205,8 @@ All routes sit behind the Cognito JWT authorizer and take the **id token** in `a
 | `POST /ask` | Ask a question; `mediaId` scopes it to one reel, omit it for the library |
 | `GET /threads` | Ask threads, newest first |
 | `GET /threads/{id}` | One thread's turns, with their citations |
+| `POST /lens/uploads` | Presigned PUT for a screenshot to search with |
+| `POST /lens/similar` | Nearest frames to a screenshot, or to a frame already indexed |
 
 The WebSocket endpoint takes the same id token as `?token=…`, because a WebSocket
 handshake cannot carry an authorization header.

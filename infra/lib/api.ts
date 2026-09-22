@@ -162,10 +162,10 @@ export class Api extends Construct {
       SEARCH_INDEX: 'frames',
       ANALYSIS_MODEL_ID: props.analysisModel,
     };
-    const makeSearchFn = (name: string, file: string) =>
+    const makeSearchFn = (name: string, file: string, exportName = 'main') =>
       new NodejsFunction(this, name, {
         entry: path.join(SEARCH_LAMBDA_DIR, file),
-        handler: 'main',
+        handler: exportName,
         runtime: lambda.Runtime.NODEJS_22_X,
         architecture: lambda.Architecture.ARM_64,
         memorySize: 512,
@@ -185,6 +185,22 @@ export class Api extends Construct {
     ]);
     props.search.grantRead(ask);
 
+    // Lens: find similar. Its own presigned-upload route, because a query
+    // screenshot is transient and must not become a media record.
+    const lensUpload = makeSearchFn('LensUpload', 'lens.ts', 'upload');
+    allow(lensUpload, ['s3:PutObject'], [storage.mediaBucket.arnForObjects('lens/*')]);
+
+    const lensSimilar = makeSearchFn('LensSimilar', 'lens.ts', 'similar');
+    allow(lensSimilar, ['s3:GetObject'], [
+      storage.mediaBucket.arnForObjects('lens/*'),
+      storage.mediaBucket.arnForObjects('media/*'),
+    ]);
+    allow(lensSimilar, ['dynamodb:BatchGetItem'], [storage.framesTable.tableArn]);
+    allow(lensSimilar, ['bedrock:InvokeModel'], [
+      `arn:aws:bedrock:*::foundation-model/${props.embeddingModel}`,
+    ]);
+    props.search.grantRead(lensSimilar);
+
     const listThreads = makeSearchFn('ListThreads', 'list-threads.ts');
     allow(listThreads, ['dynamodb:Query'], [`${storage.threadsTable.tableArn}/index/byCreatedAt`]);
 
@@ -201,6 +217,8 @@ export class Api extends Construct {
       [apigw.HttpMethod.POST, '/ask', ask],
       [apigw.HttpMethod.GET, '/threads', listThreads],
       [apigw.HttpMethod.GET, '/threads/{id}', getThread],
+      [apigw.HttpMethod.POST, '/lens/uploads', lensUpload],
+      [apigw.HttpMethod.POST, '/lens/similar', lensSimilar],
     ];
 
     for (const [method, routePath, fn] of routes) {

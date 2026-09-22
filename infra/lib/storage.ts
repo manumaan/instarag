@@ -60,6 +60,9 @@ export class Storage extends Construct {
       ],
       lifecycleRules: [
         { id: 'abort-incomplete-uploads', abortIncompleteMultipartUploadAfter: Duration.days(7) },
+        // Lens query screenshots are used once, to search with. Nothing refers
+        // to them afterwards, so they expire rather than accumulate.
+        { id: 'lens-queries', prefix: 'lens/', expiration: Duration.days(1) },
         ...(props.retentionDays
           ? [{ id: 'media-retention', prefix: 'media/', expiration: Duration.days(props.retentionDays) }]
           : []),

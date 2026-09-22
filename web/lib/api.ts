@@ -153,6 +153,35 @@ export const ask = (question: string, options: { mediaId?: string; threadId?: st
 
 export const listThreads = () => call<{ items: Thread[] }>('/threads');
 
+export interface SimilarMatch {
+  media_id: string;
+  ts_ms: number;
+  score: number;
+  description: string;
+  ocr_text: string;
+  url?: string;
+}
+
+/** Uploads a screenshot to search with. It goes to its own prefix, not the library. */
+export async function lensUpload(file: File): Promise<{ s3Key: string }> {
+  const contentType = file.type.toLowerCase();
+  const { s3Key, uploadUrl } = await call<{ s3Key: string; uploadUrl: string }>('/lens/uploads', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ contentType, bytes: file.size }),
+  });
+  const put = await fetch(uploadUrl, { method: 'PUT', headers: { 'content-type': contentType }, body: file });
+  if (!put.ok) throw new Error(`upload failed: ${put.status}`);
+  return { s3Key };
+}
+
+export const findSimilar = (query: { s3Key: string } | { mediaId: string; tsMs: number }) =>
+  call<{ matches: SimilarMatch[] }>('/lens/similar', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(query),
+  });
+
 export const getThread = (id: string) =>
   call<{ threadId: string; messages: ThreadMessage[] }>(`/threads/${id}`);
 

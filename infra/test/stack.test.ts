@@ -23,7 +23,7 @@ test('every API route is authorised by the user pool', () => {
   const routes = Object.entries(template.findResources('AWS::ApiGatewayV2::Route')).filter(
     ([, route]) => !String(route.Properties.RouteKey).startsWith('$'),
   );
-  assert.equal(routes.length, 9);
+  assert.equal(routes.length, 11);
   for (const [name, route] of routes) {
     assert.equal(route.Properties.AuthorizationType, 'JWT', `${name} must require a JWT`);
   }
@@ -198,8 +198,13 @@ test('Bedrock access is invoke-only and limited to named models', () => {
     (policy) => policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown }>,
   );
   const invokes = statements.filter((s) => [s.Action].flat().some((a) => String(a).startsWith('bedrock:')));
-  // Three callers: the vision pass, the embedding stage and Ask.
-  assert.equal(invokes.length, 3, 'only the analysis, indexing and Ask handlers may call Bedrock');
+  // Four callers, and adding a fifth should be a deliberate edit here: the
+  // vision pass, the embedding stage, Ask, and Lens find-similar.
+  assert.equal(
+    invokes.length,
+    4,
+    'only the analysis, indexing, Ask and Lens handlers may call Bedrock',
+  );
   for (const statement of invokes) {
     assert.deepEqual(
       [statement.Action].flat(),
@@ -276,4 +281,28 @@ test('the index stage runs after analysis and before ready', () => {
     definition.indexOf('Analyse') < definition.indexOf('MarkIndexing'),
     'indexing must follow analysis so descriptions are embedded',
   );
+});
+
+test('Lens query uploads are separate from media and expire', () => {
+  const template = synth();
+  // A query screenshot must not be able to land in the media prefix.
+  const statements = Object.values(template.findResources('AWS::IAM::Policy')).flatMap(
+    (policy) => policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown }>,
+  );
+  const lensPuts = statements.filter(
+    (s) => [s.Action].flat().includes('s3:PutObject') && JSON.stringify(s.Resource).includes('lens/*'),
+  );
+  assert.equal(lensPuts.length, 1, 'exactly one role may write lens uploads');
+  assert.ok(
+    !JSON.stringify(lensPuts[0].Resource).includes('media/*'),
+    'the lens upload role must not be able to write into media/',
+  );
+
+  template.hasResourceProperties('AWS::S3::Bucket', {
+    LifecycleConfiguration: {
+      Rules: Match.arrayWith([
+        Match.objectLike({ Id: 'lens-queries', Prefix: 'lens/', ExpirationInDays: 1 }),
+      ]),
+    },
+  });
 });

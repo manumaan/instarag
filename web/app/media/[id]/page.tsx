@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import StatusChip from '@/components/StatusChip';
 import AskPanel from '@/components/AskPanel';
+import LensSheet from '@/components/LensSheet';
 import { getMedia, type MediaDetail } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
 
@@ -21,6 +22,7 @@ export default function ReelDetailPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [seekTo, setSeekTo] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [lensFrame, setLensFrame] = useState<number | null>(null);
 
   // A citation from library-wide Ask arrives as ?t=<ms>.
   useEffect(() => {
@@ -191,6 +193,9 @@ export default function ReelDetailPage() {
                   <pre className="small">{selectedFrame.ocr_text}</pre>
                 </>
               )}
+              <button className="ghost small" onClick={() => setLensFrame(selectedFrame.ts_ms)}>
+                Find similar frames
+              </button>
             </div>
           )}
         </section>
@@ -291,6 +296,10 @@ export default function ReelDetailPage() {
           </dl>
         </aside>
       </div>
+
+      {lensFrame !== null && (
+        <LensSheet frame={{ mediaId: media.id, tsMs: lensFrame }} onClose={() => setLensFrame(null)} />
+      )}
     </main>
   );
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import DropZone from '@/components/DropZone';
+import LensSheet from '@/components/LensSheet';
 import StatusChip from '@/components/StatusChip';
 import { deleteMedia, listMedia, type Media } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
@@ -17,6 +18,7 @@ export default function LibraryPage() {
   const [cursor, setCursor] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [lensOpen, setLensOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -74,11 +76,15 @@ export default function LibraryPage() {
 
   return (
     <main className="page">
-      <p>
+      <p className="row">
         <Link href="/ask" className="back">
           Ask your library →
         </Link>
+        <button className="ghost small" onClick={() => setLensOpen(true)}>
+          Search by screenshot
+        </button>
       </p>
+      {lensOpen && <LensSheet onClose={() => setLensOpen(false)} />}
       <DropZone onAdded={(media) => setItems((prev) => [media, ...prev.filter((m) => m.id !== media.id)])} />
 
       {error && <p className="error">{error}</p>}
