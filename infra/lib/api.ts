@@ -1,0 +1,214 @@
+import { Construct } from 'constructs';
+import { Duration, Stack } from 'aws-cdk-lib';
+import * as apigw from 'aws-cdk-lib/aws-apigatewayv2';
+import { HttpUserPoolAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as path from 'node:path';
+import type { Auth } from './auth';
+import { Storage } from './storage';
+import type { Search } from './search';
+
+export interface ApiProps {
+  readonly storage: Storage;
+  readonly auth: Auth;
+  readonly webOrigins: string[];
+  readonly search: Search;
+  /** Model that answers questions; same one that analyses frames. */
+  readonly analysisModel: string;
+  readonly embeddingModel: string;
+}
+
+const LAMBDA_DIR = path.join(__dirname, '..', 'lambda', 'media');
+const SEARCH_LAMBDA_DIR = path.join(__dirname, '..', 'lambda', 'search');
+
+/**
+ * HTTP API for drop-in mode (Phase 1).
+ *
+ * Every route sits behind the Cognito user pool JWT authorizer, and each
+ * handler gets its own role with only the actions that route needs.
+ */
+export class Api extends Construct {
+  readonly httpApi: apigw.HttpApi;
+  /** Exposed so the stack can point them at the ingest pipeline. */
+  readonly completeUploadFunction: NodejsFunction;
+  readonly createFromUrlFunction: NodejsFunction;
+
+  constructor(scope: Construct, id: string, props: ApiProps) {
+    super(scope, id);
+    const { storage, auth } = props;
+
+    const authorizer = new HttpUserPoolAuthorizer('UserPoolAuthorizer', auth.userPool, {
+      userPoolClients: [auth.userPoolClient],
+    });
+
+    this.httpApi = new apigw.HttpApi(this, 'HttpApi', {
+      description: 'Reel Lens API',
+      corsPreflight: {
+        allowOrigins: props.webOrigins,
+        allowMethods: [
+          apigw.CorsHttpMethod.GET,
+          apigw.CorsHttpMethod.POST,
+          apigw.CorsHttpMethod.DELETE,
+          apigw.CorsHttpMethod.OPTIONS,
+        ],
+        allowHeaders: ['authorization', 'content-type'],
+        maxAge: Duration.hours(1),
+      },
+      defaultAuthorizer: authorizer,
+    });
+
+    // Cheap insurance against a runaway client: the single user needs nothing near this.
+    const stage = this.httpApi.defaultStage!.node.defaultChild as apigw.CfnStage;
+    stage.defaultRouteSettings = { throttlingRateLimit: 20, throttlingBurstLimit: 40 };
+
+    const commonEnv = {
+      MEDIA_BUCKET: storage.mediaBucket.bucketName,
+      MEDIA_TABLE: storage.mediaTable.tableName,
+      FRAMES_TABLE: storage.framesTable.tableName,
+      JOBS_TABLE: storage.jobsTable.tableName,
+      TRANSCRIPT_SEGMENTS_TABLE: storage.transcriptSegmentsTable.tableName,
+    };
+
+    const makeFn = (name: string, file: string, overrides: { timeout?: Duration } = {}) =>
+      new NodejsFunction(this, name, {
+        entry: path.join(LAMBDA_DIR, file),
+        handler: 'main',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
+        memorySize: 256,
+        timeout: overrides.timeout ?? Duration.seconds(15),
+        environment: commonEnv,
+        logGroup: new logs.LogGroup(this, `${name}Logs`, { retention: logs.RetentionDays.TWO_WEEKS }),
+        bundling: {
+          minify: true,
+          sourceMap: true,
+          // CJS, not ESM: the bundled AWS SDK is CommonJS, and esbuild's ESM
+          // output turns its internal require('node:https') into a shim that
+          // throws "Dynamic require ... is not supported" at cold start.
+          format: OutputFormat.CJS,
+          target: 'node22',
+          // Bundle the SDK rather than trusting whatever version the runtime ships,
+          // and because s3-request-presigner is not part of the runtime's SDK.
+          externalModules: [],
+        },
+      });
+
+    const mediaObjects = storage.mediaBucket.arnForObjects('media/*');
+    const allow = (fn: NodejsFunction, actions: string[], resources: string[]) =>
+      fn.addToRolePolicy(new iam.PolicyStatement({ actions, resources }));
+
+    const createUpload = makeFn('CreateUpload', 'create-upload.ts');
+    allow(createUpload, ['s3:PutObject'], [mediaObjects]);
+    allow(createUpload, ['dynamodb:PutItem'], [storage.mediaTable.tableArn]);
+
+    const completeUpload = makeFn('CompleteUpload', 'complete-upload.ts');
+    allow(completeUpload, ['s3:GetObject'], [mediaObjects]); // HeadObject is authorised as GetObject
+    allow(completeUpload, ['dynamodb:GetItem', 'dynamodb:UpdateItem'], [storage.mediaTable.tableArn]);
+
+    this.completeUploadFunction = completeUpload;
+
+    const createFromUrl = makeFn('CreateFromUrl', 'create-from-url.ts');
+    allow(createFromUrl, ['dynamodb:PutItem'], [storage.mediaTable.tableArn]);
+    this.createFromUrlFunction = createFromUrl;
+
+    const listMedia = makeFn('ListMedia', 'list-media.ts');
+    allow(
+      listMedia,
+      ['dynamodb:Query'],
+      [`${storage.mediaTable.tableArn}/index/${Storage.MEDIA_BY_CREATED_AT}`],
+    );
+
+    const getMedia = makeFn('GetMedia', 'get-media.ts');
+    allow(getMedia, ['dynamodb:GetItem'], [storage.mediaTable.tableArn]);
+    allow(getMedia, ['dynamodb:Query'], [
+      storage.framesTable.tableArn,
+      storage.transcriptSegmentsTable.tableArn,
+    ]);
+    allow(getMedia, ['s3:GetObject'], [mediaObjects]);
+
+    // Longer than the rest: it also clears the vector index, and the first
+    // call after the collection has scaled to zero waits for it to warm up.
+    const deleteMedia = makeFn('DeleteMedia', 'delete-media.ts', { timeout: Duration.seconds(60) });
+    allow(deleteMedia, ['dynamodb:GetItem', 'dynamodb:DeleteItem'], [storage.mediaTable.tableArn]);
+    allow(deleteMedia, ['dynamodb:Query', 'dynamodb:BatchWriteItem'], [storage.framesTable.tableArn]);
+    allow(deleteMedia, ['s3:DeleteObject'], [mediaObjects]);
+    allow(deleteMedia, ['dynamodb:DeleteItem'], [storage.captionFactsTable.tableArn]);
+    allow(deleteMedia, ['dynamodb:Query', 'dynamodb:BatchWriteItem'], [
+      storage.transcriptSegmentsTable.tableArn,
+    ]);
+    // Deleting a reel has to remove it from the index too, or Ask keeps citing it.
+    deleteMedia.addEnvironment('SEARCH_ENDPOINT', props.search.endpoint);
+    deleteMedia.addEnvironment('SEARCH_INDEX', 'frames');
+    deleteMedia.addEnvironment('CAPTION_FACTS_TABLE', storage.captionFactsTable.tableName);
+    props.search.grantWrite(deleteMedia);
+    deleteMedia.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [storage.mediaBucket.bucketArn],
+        conditions: { StringLike: { 's3:prefix': ['media/*'] } },
+      }),
+    );
+
+    // Ask: retrieval over the frame index, then a grounded answer.
+    const askEnv = {
+      ...commonEnv,
+      THREADS_TABLE: storage.threadsTable.tableName,
+      MESSAGES_TABLE: storage.messagesTable.tableName,
+      SEARCH_ENDPOINT: props.search.endpoint,
+      SEARCH_INDEX: 'frames',
+      ANALYSIS_MODEL_ID: props.analysisModel,
+    };
+    const makeSearchFn = (name: string, file: string) =>
+      new NodejsFunction(this, name, {
+        entry: path.join(SEARCH_LAMBDA_DIR, file),
+        handler: 'main',
+        runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
+        memorySize: 512,
+        timeout: Duration.seconds(60),
+        environment: askEnv,
+        logGroup: new logs.LogGroup(this, `${name}Logs`, { retention: logs.RetentionDays.TWO_WEEKS }),
+        bundling: { minify: true, sourceMap: true, format: OutputFormat.CJS, target: 'node22', externalModules: [] },
+      });
+
+    const ask = makeSearchFn('Ask', 'ask.ts');
+    allow(ask, ['dynamodb:PutItem'], [storage.threadsTable.tableArn]);
+    allow(ask, ['dynamodb:PutItem', 'dynamodb:Query'], [storage.messagesTable.tableArn]);
+    allow(ask, ['bedrock:InvokeModel'], [
+      `arn:aws:bedrock:${Stack.of(this).region}:${Stack.of(this).account}:inference-profile/${props.analysisModel}`,
+      `arn:aws:bedrock:*::foundation-model/${props.analysisModel.replace(/^(us|global)\./, '')}`,
+      `arn:aws:bedrock:*::foundation-model/${props.embeddingModel}`,
+    ]);
+    props.search.grantRead(ask);
+
+    const listThreads = makeSearchFn('ListThreads', 'list-threads.ts');
+    allow(listThreads, ['dynamodb:Query'], [`${storage.threadsTable.tableArn}/index/byCreatedAt`]);
+
+    const getThread = makeSearchFn('GetThread', 'get-thread.ts');
+    allow(getThread, ['dynamodb:Query'], [storage.messagesTable.tableArn]);
+
+    const routes: Array<[apigw.HttpMethod, string, NodejsFunction]> = [
+      [apigw.HttpMethod.POST, '/uploads', createUpload],
+      [apigw.HttpMethod.POST, '/media/{id}/complete', completeUpload],
+      [apigw.HttpMethod.POST, '/media/url', createFromUrl],
+      [apigw.HttpMethod.GET, '/media', listMedia],
+      [apigw.HttpMethod.GET, '/media/{id}', getMedia],
+      [apigw.HttpMethod.DELETE, '/media/{id}', deleteMedia],
+      [apigw.HttpMethod.POST, '/ask', ask],
+      [apigw.HttpMethod.GET, '/threads', listThreads],
+      [apigw.HttpMethod.GET, '/threads/{id}', getThread],
+    ];
+
+    for (const [method, routePath, fn] of routes) {
+      this.httpApi.addRoutes({
+        path: routePath,
+        methods: [method],
+        integration: new HttpLambdaIntegration(`${fn.node.id}Integration`, fn),
+      });
+    }
+  }
+}
