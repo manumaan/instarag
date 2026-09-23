@@ -28,24 +28,34 @@ export const main = handler(async (event) => {
     throw badRequest(`only a failed reel can be retried; this one is ${media.status}`);
   }
 
+  // A carousel has no video at all: its slides are the source material, so a
+  // re-run means re-analysing them rather than re-deriving them.
+  const isCarousel = media.type === 'carousel';
+
   // A url-sourced reel is fetched again, so its original can go too. An upload
   // has no other copy: losing it would make the reel unrecoverable.
-  const refetches = media.source === 'url';
-  if (!refetches && !media.s3_key) {
+  const refetches = media.source === 'url' && !isCarousel;
+  if (!refetches && !isCarousel && !media.s3_key) {
     throw badRequest('this reel has no stored original and cannot be re-fetched');
   }
 
-  const purged = await purgeDerived(id);
-  const objectsRemoved = await purgeObjects(id, { keepOriginal: !refetches });
+  const purged = await purgeDerived(id, { keepFrames: isCarousel });
+  const objectsRemoved = await purgeObjects(id, {
+    keepOriginal: !refetches,
+    keepFrames: isCarousel,
+  });
 
   await ddb.send(
     new UpdateCommand({
       TableName: TABLES.media,
       Key: { id },
       // REMOVE the error, or a stale failure would still show next to a
-      // reel that is now working.
-      UpdateExpression:
-        'SET #status = :queued REMOVE #error, analysis_summary, places, transcript, transcript_segment_count, cover_s3_key',
+      // reel that is now working. A carousel keeps its cover: that points at
+      // slide 1 and is written on upload, not by the pipeline, so clearing it
+      // would leave the Library tile blank for good.
+      UpdateExpression: `SET #status = :queued REMOVE #error, analysis_summary, places, transcript, transcript_segment_count${
+        isCarousel ? '' : ', cover_s3_key'
+      }`,
       ExpressionAttributeNames: { '#status': 'status', '#error': 'error' },
       ExpressionAttributeValues: { ':queued': 'queued' },
       ConditionExpression: 'attribute_exists(id)',
@@ -59,6 +69,9 @@ export const main = handler(async (event) => {
       input: JSON.stringify({
         mediaId: id,
         source: media.source,
+        // Without this a retried carousel is routed down the reel path and
+        // fails looking for a video to extract.
+        ...(isCarousel ? { kind: 'carousel' } : {}),
         jobExpiresAt: String(Math.floor(Date.now() / 1000) + JOB_TTL_SECONDS),
       }),
     }),

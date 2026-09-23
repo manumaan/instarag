@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { addFromUrl, uploadFile, type Media } from '@/lib/api';
+import { addFromUrl, uploadCarousel, uploadFile, type Media } from '@/lib/api';
 
 const ACCEPT = 'video/mp4,video/quicktime,video/webm,image/jpeg,image/png,image/webp';
 
@@ -13,13 +13,31 @@ export default function DropZone({ onAdded }: { onAdded: (media: Media) => void 
   const [url, setUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  async function handleFiles(files: FileList | File[]) {
+  async function handleFiles(fileList: FileList | File[]) {
     setError(null);
-    for (const file of Array.from(files)) {
+    const files = Array.from(fileList);
+
+    // Several images at once is a carousel: one post told across slides, not
+    // several unrelated posts. A video is always its own item.
+    const images = files.filter((file) => file.type.startsWith('image/'));
+    const others = files.filter((file) => !file.type.startsWith('image/'));
+
+    if (images.length > 1) {
+      const label = `${images.length} slides`;
+      try {
+        setProgress({ name: label, fraction: 0 });
+        onAdded(await uploadCarousel(images, (fraction) => setProgress({ name: label, fraction })));
+      } catch (err) {
+        setError(`carousel: ${err instanceof Error ? err.message : 'upload failed'}`);
+      } finally {
+        setProgress(null);
+      }
+    }
+
+    for (const file of images.length > 1 ? others : files) {
       try {
         setProgress({ name: file.name, fraction: 0 });
-        const media = await uploadFile(file, (fraction) => setProgress({ name: file.name, fraction }));
-        onAdded(media);
+        onAdded(await uploadFile(file, (fraction) => setProgress({ name: file.name, fraction })));
       } catch (err) {
         setError(`${file.name}: ${err instanceof Error ? err.message : 'upload failed'}`);
       } finally {
@@ -81,7 +99,10 @@ export default function DropZone({ onAdded }: { onAdded: (media: Media) => void 
             <p>
               <strong>Drop a screen recording or screenshots</strong>
             </p>
-            <p className="muted small">mp4, mov, webm, jpg, png, webp — up to 500 MB</p>
+            <p className="muted small">
+              mp4, mov, webm, jpg, png, webp — up to 500 MB. Several images at once become one
+              carousel.
+            </p>
           </>
         )}
       </div>

@@ -86,7 +86,6 @@ const LOGIN_WALL = [
   'sign in to confirm',
   'you need to log in',
   'private account',
-  'no video formats found',
   // What Instagram actually returned to the Lambda: a 200 with no media. It
   // means the same thing, and no number of retries will change it.
   'empty media response',
@@ -98,18 +97,40 @@ const LOGIN_WALL = [
  * Turns a yt-dlp stderr dump into something the Library can show, and says
  * plainly when the cause is a login wall rather than a broken link.
  */
-export function explainDownloadFailure(stderr: string): { message: string; loginWalled: boolean } {
+/**
+ * What an image post or carousel looks like to yt-dlp. Distinct from a login
+ * wall: reporting it as one sent the reader after cookies for a problem that
+ * has nothing to do with authentication.
+ */
+const NO_VIDEO = ['no video formats found', 'no video could be found', 'unsupported url'];
+
+export function explainDownloadFailure(stderr: string): {
+  message: string;
+  loginWalled: boolean;
+  noVideo: boolean;
+} {
   const haystack = stderr.toLowerCase();
-  const loginWalled = LOGIN_WALL.some((phrase) => haystack.includes(phrase));
+  const noVideo = NO_VIDEO.some((phrase) => haystack.includes(phrase));
+  const loginWalled = !noVideo && LOGIN_WALL.some((phrase) => haystack.includes(phrase));
   // Our subprocess wrapper prefixes "yt-dlp exited N: ", so ERROR: sits mid-line.
   const errorLine = stderr.split('\n').find((line) => line.includes('ERROR:'));
   const firstError = errorLine
     ? errorLine.slice(errorLine.indexOf('ERROR:')).trim()
     : (stderr.trim().split('\n').slice(-1)[0] ?? 'download failed');
+  if (noVideo) {
+    return {
+      message:
+        'This link has no video in it, which is what an image post or a carousel looks like. ' +
+        'Upload its images instead, or connect the account if it is yours.',
+      loginWalled: false,
+      noVideo: true,
+    };
+  }
   return {
     message: loginWalled
       ? `Instagram would not serve this reel without a logged-in session: ${firstError}`
       : firstError,
     loginWalled,
+    noVideo: false,
   };
 }

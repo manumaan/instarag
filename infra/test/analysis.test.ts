@@ -78,3 +78,28 @@ test('the instruction demands grounded places and exact timestamps', () => {
   assert.match(instruction, /read_from_frame only when the name is actually legible/);
   assert.match(instruction, /Never present an inferred/);
 });
+
+test('a carousel is described as slides, not as a timeline', () => {
+  const carousel = buildInstruction({ isCarousel: true, caption: 'five tips' });
+  assert.match(carousel, /slides of one Instagram carousel post/);
+  assert.match(carousel, /encodes the slide number rather than a time/);
+  // The summary should describe the argument across slides, not just each image.
+  assert.match(carousel, /what the post as a whole is saying/);
+  assert.match(carousel, /Caption posted with the carousel/);
+  assert.doesNotMatch(carousel, /keyframes of one Instagram reel/);
+});
+
+test('a reel is still described as a reel', () => {
+  const reel = buildInstruction({ caption: 'paris food' });
+  assert.match(reel, /keyframes of one Instagram reel/);
+  assert.match(reel, /Caption posted with the reel/);
+  assert.doesNotMatch(reel, /carousel/);
+});
+
+test('both forms still demand one entry per labelled ts_ms and grounded places', () => {
+  for (const instruction of [buildInstruction({}), buildInstruction({ isCarousel: true })]) {
+    assert.match(instruction, /one frames entry per labelled ts_ms/);
+    assert.match(instruction, /read_from_frame only when the name is actually legible/);
+    assert.match(instruction, /Never present an inferred/);
+  }
+});

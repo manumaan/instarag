@@ -37,16 +37,27 @@ export interface Media {
   spoken_language?: string;
   /** 'frames' when the caption was read off the video rather than supplied. */
   caption_source?: string;
+  /** Number of slides, when this is a carousel. */
+  slide_count?: number;
   /** Presigned cover frame for the library grid. */
   thumbnailUrl?: string;
   error?: string;
 }
 
+/** ts_ms encodes the slide index for a carousel; see SLIDE_INTERVAL_MS. */
+export const SLIDE_INTERVAL_MS = 1000;
+export const tsMsToSlide = (tsMs: number) => Math.round(tsMs / SLIDE_INTERVAL_MS) + 1;
+
+/** A carousel has no timeline, so label its frames by slide instead. */
+export const momentLabel = (media: Pick<Media, 'type'>, tsMs: number) =>
+  media.type === 'carousel' ? `Slide ${tsMsToSlide(tsMs)}` : `${(tsMs / 1000).toFixed(1)}s`;
+
 export interface Frame {
   media_id: string;
   ts_ms: number;
   url?: string;
-  kind?: 'cover' | 'scene' | 'sample';
+  kind?: 'cover' | 'scene' | 'sample' | 'slide';
+  slide_index?: number;
   description?: string;
   ocr_text?: string;
 }
@@ -230,6 +241,39 @@ export const searchTheWeb = (query: { s3Key: string } | { mediaId: string; tsMs:
 
 export const getThread = (id: string) =>
   call<{ threadId: string; messages: ThreadMessage[] }>(`/threads/${id}`);
+
+/**
+ * Uploads several images as one carousel rather than as separate posts, so the
+ * whole thing is analysed together and Ask can reason across the slides.
+ */
+export async function uploadCarousel(
+  files: File[],
+  onProgress?: (fraction: number) => void,
+): Promise<Media> {
+  const slides = files.map((file) => ({
+    filename: file.name,
+    contentType: file.type.toLowerCase(),
+    bytes: file.size,
+  }));
+
+  const { mediaId, slides: targets } = await call<{
+    mediaId: string;
+    slides: Array<{ index: number; uploadUrl: string; contentType: string }>;
+  }>('/uploads', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ slides }),
+  });
+
+  let done = 0;
+  for (const target of targets) {
+    await putWithProgress(target.uploadUrl, files[target.index], target.contentType);
+    done += 1;
+    onProgress?.(done / targets.length);
+  }
+
+  return call<Media>(`/media/${mediaId}/complete`, { method: 'POST' });
+}
 
 /**
  * Three steps: reserve the id, PUT the bytes straight to S3 with the presigned

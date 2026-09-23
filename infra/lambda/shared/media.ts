@@ -35,6 +35,8 @@ export interface MediaRecord {
   taken_at?: string;
   /** Account that posted a downloaded reel, from the public page metadata. */
   uploader?: string;
+  /** Number of slides, when this is a carousel. */
+  slide_count?: number;
   /** Speech, transcribed from the reel's audio track. */
   transcript?: string;
   transcript_segment_count?: number;
@@ -53,6 +55,20 @@ export const ALLOWED_CONTENT_TYPES: Record<string, { ext: string; type: MediaTyp
 };
 
 export const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+
+/**
+ * A carousel's slides are stored as frames, because frames are already the
+ * citable unit: one row per image, keyed by (media_id, ts_ms), which lets
+ * analysis, the index, Ask and Lens work on a carousel unchanged.
+ *
+ * ts_ms carries the slide index times this, so a slide is a whole "second"
+ * apart from its neighbour and nothing that sorts or keys by ts_ms needs to
+ * know the difference. The UI labels them "Slide N" rather than a time.
+ */
+export const SLIDE_INTERVAL_MS = 1000;
+
+export const slideTsMs = (index: number) => index * SLIDE_INTERVAL_MS;
+export const tsMsToSlide = (tsMs: number) => Math.round(tsMs / SLIDE_INTERVAL_MS) + 1;
 
 /**
  * Instagram permalinks we recognise in drop-in mode.

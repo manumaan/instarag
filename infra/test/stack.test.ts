@@ -4,6 +4,47 @@ import { App } from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { ReelLensStack } from '../lib/reel-lens-stack';
 
+
+/**
+ * The state machine definition as a graph.
+ *
+ * Asserting on substring positions in the serialized definition looked fine
+ * until a state called MarkAnalysingSlides appeared, which contains
+ * MarkAnalysing: the old check then compared the wrong pair. Parsing gives
+ * real reachability instead. Tokens become a placeholder so the JSON parses.
+ */
+function stateMachineGraph(template: Template): Record<string, Record<string, unknown>> {
+  const machine = Object.values(template.findResources('AWS::StepFunctions::StateMachine'))[0];
+  const definition = machine.Properties.DefinitionString;
+  const parts: unknown[] = definition['Fn::Join'] ? definition['Fn::Join'][1] : [definition];
+  const flattened = parts.map((part) => (typeof part === 'string' ? part : 'TOKEN')).join('');
+  return JSON.parse(flattened).States as Record<string, Record<string, unknown>>;
+}
+
+/** Every state reachable from `from`, following Next, Choices, Default and branches. */
+function reachableFrom(states: Record<string, Record<string, unknown>>, from: string): Set<string> {
+  const seen = new Set<string>();
+  const queue = [from];
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (seen.has(name) || !states[name]) continue;
+    seen.add(name);
+    const state = states[name];
+    const next: string[] = [];
+    if (typeof state.Next === 'string') next.push(state.Next);
+    if (typeof state.Default === 'string') next.push(state.Default);
+    for (const choice of (state.Choices ?? []) as Array<{ Next?: string }>) {
+      if (choice.Next) next.push(choice.Next);
+    }
+    for (const branch of (state.Branches ?? []) as Array<{ StartAt?: string; States?: Record<string, Record<string, unknown>> }>) {
+      if (branch.StartAt) seen.add(branch.StartAt);
+      for (const inner of Object.keys(branch.States ?? {})) seen.add(inner);
+    }
+    queue.push(...next);
+  }
+  return seen;
+}
+
 function synth() {
   const app = new App();
   const stack = new ReelLensStack(app, 'TestStack', {
@@ -188,17 +229,72 @@ test('the websocket connect route is authorised, disconnect is not', () => {
 });
 
 test('the analysis pass runs between extraction and ready', () => {
-  const template = synth();
-  const machine = Object.values(template.findResources('AWS::StepFunctions::StateMachine'))[0];
-  const definition = JSON.stringify(machine.Properties.DefinitionString);
-  for (const state of ['MarkAnalysing', 'Analyse']) {
-    assert.ok(definition.includes(state), `definition is missing ${state}`);
-  }
-  // Order matters: analysis needs the frames extraction produced.
+  const states = stateMachineGraph(synth());
+  assert.ok(states.MarkAnalysing, 'definition is missing MarkAnalysing');
+  assert.ok(states.MarkIndexing, 'definition is missing MarkIndexing');
+
+  // Analysis needs the frames extraction produced, so it has to be downstream
+  // of Extract and upstream of indexing.
+  const afterExtract = reachableFrom(states, 'Extract');
+  assert.ok(afterExtract.has('MarkAnalysing'), 'analysis must follow extraction');
+  assert.ok(afterExtract.has('MarkIndexing'), 'indexing must follow analysis');
   assert.ok(
-    definition.indexOf('Extract') < definition.indexOf('MarkAnalysing'),
-    'analysis must follow extraction',
+    !reachableFrom(states, 'MarkIndexing').has('Extract'),
+    'extraction must not run after indexing',
   );
+});
+
+test('a carousel skips download, extraction and transcription', () => {
+  const states = stateMachineGraph(synth());
+  const fromCarousel = reachableFrom(states, 'MarkAnalysingSlides');
+
+  // Slides are already frames: there is nothing to fetch, no video to extract
+  // from and no audio to transcribe.
+  for (const skipped of ['Download', 'Extract', 'StartTranscribe']) {
+    assert.ok(!fromCarousel.has(skipped), `a carousel must not reach ${skipped}`);
+  }
+  // It must still be analysed and indexed, or its slides are never searchable.
+  assert.ok(fromCarousel.has('AnalyseCarousel'), 'a carousel must still be analysed');
+  assert.ok(fromCarousel.has('MarkIndexing'), 'a carousel must still be indexed');
+
+  // And the branch has to actually be wired to the entry choice.
+  const choices = (states.NeedsDownload.Choices ?? []) as Array<{ Next?: string; Variable?: string }>;
+  assert.ok(
+    choices.some((choice) => choice.Next === 'MarkAnalysingSlides'),
+    'nothing routes a carousel to the slide path',
+  );
+});
+
+test('the entry choice tolerates an absent field', () => {
+  const states = stateMachineGraph(synth());
+  const choices = (states.NeedsDownload.Choices ?? []) as Array<Record<string, unknown>>;
+
+  // Step Functions does not treat a missing path as "condition false": it fails
+  // the execution with States.Runtime. `kind` is absent on every upload and
+  // `source` on anything that forgets it, so each comparison must be paired
+  // with an IsPresent on the same variable. Getting this wrong broke every reel
+  // while the carousel path the condition was added for kept working, which is
+  // why it is asserted rather than left to review.
+  const comparisons = (choice: Record<string, unknown>): Array<Record<string, unknown>> =>
+    Array.isArray(choice.And) ? (choice.And as Array<Record<string, unknown>>) : [choice];
+
+  for (const choice of choices) {
+    const parts = comparisons(choice);
+    const compared = parts.filter((part) => 'StringEquals' in part).map((part) => part.Variable);
+    const guarded = parts.filter((part) => part.IsPresent === true).map((part) => part.Variable);
+    for (const variable of compared) {
+      assert.ok(
+        guarded.includes(variable),
+        `${variable} is compared without an IsPresent guard, so an input lacking it fails the execution`,
+      );
+    }
+  }
+
+  // And the guards must be on the paths that are actually optional.
+  const allGuards = choices.flatMap((choice) =>
+    comparisons(choice).filter((part) => part.IsPresent === true).map((part) => part.Variable),
+  );
+  assert.ok(allGuards.includes('$.kind'), '$.kind must be guarded: uploads do not set it');
 });
 
 test('Bedrock access is invoke-only and limited to named models', () => {

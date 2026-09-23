@@ -139,32 +139,57 @@ export const similar = handler(async (event) => {
 /**
  * Frame images are presigned from the frames table rather than stored in the
  * index, so the index needs no mapping change to serve Lens.
+ *
+ * A match whose frame row is gone is dropped, not returned imageless. An index
+ * document can outlive its frame — a delete that failed halfway leaves one
+ * behind — and Lens is a list of pictures, so a hit with no picture is a ghost
+ * result: it cannot be looked at and it cannot be opened.
  */
 async function withThumbnails(matches: SimilarMatch[]): Promise<SimilarMatch[]> {
   if (matches.length === 0) return matches;
 
-  const keys = matches.map((match) => ({ media_id: match.media_id, ts_ms: match.ts_ms }));
-  const fetched = await ddb.send(
-    new BatchGetCommand({
-      RequestItems: { [TABLES.frames]: { Keys: keys, ProjectionExpression: 'media_id, ts_ms, s3_key' } },
-    }),
-  );
-  const s3Keys = new Map<string, string>();
-  for (const row of fetched.Responses?.[TABLES.frames] ?? []) {
-    if (row.s3_key) s3Keys.set(`${row.media_id}:${row.ts_ms}`, String(row.s3_key));
-  }
+  const s3Keys = await frameKeys(matches.map(({ media_id, ts_ms }) => ({ media_id, ts_ms })));
+
+  const found = matches.flatMap((match) => {
+    const key = s3Keys.get(`${match.media_id}:${match.ts_ms}`);
+    return key ? [{ match, key }] : [];
+  });
 
   return Promise.all(
-    matches.map(async (match) => {
-      const key = s3Keys.get(`${match.media_id}:${match.ts_ms}`);
-      return {
-        ...match,
-        url: key
-          ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: BUCKET, Key: key }), {
-              expiresIn: URL_TTL_SECONDS,
-            })
-          : undefined,
-      };
-    }),
+    found.map(async ({ match, key }) => ({
+      ...match,
+      url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: BUCKET, Key: key }), {
+        expiresIn: URL_TTL_SECONDS,
+      }),
+    })),
   );
+}
+
+interface FrameKey {
+  media_id: string;
+  ts_ms: number;
+}
+
+/**
+ * BatchGet is allowed to return part of what was asked for and hand the rest
+ * back as UnprocessedKeys. Ignoring them loses thumbnails for results that are
+ * perfectly present, so the leftovers are asked for again.
+ */
+async function frameKeys(keys: FrameKey[]): Promise<Map<string, string>> {
+  const s3Keys = new Map<string, string>();
+  let pending = keys;
+
+  for (let attempt = 0; pending.length > 0 && attempt < 4; attempt += 1) {
+    const fetched = await ddb.send(
+      new BatchGetCommand({
+        RequestItems: { [TABLES.frames]: { Keys: pending, ProjectionExpression: 'media_id, ts_ms, s3_key' } },
+      }),
+    );
+    for (const row of fetched.Responses?.[TABLES.frames] ?? []) {
+      if (row.s3_key) s3Keys.set(`${row.media_id}:${row.ts_ms}`, String(row.s3_key));
+    }
+    pending = (fetched.UnprocessedKeys?.[TABLES.frames]?.Keys ?? []) as FrameKey[];
+  }
+
+  return s3Keys;
 }

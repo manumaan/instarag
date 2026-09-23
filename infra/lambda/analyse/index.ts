@@ -3,7 +3,7 @@ import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/li
 import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { ddb, TABLES } from '../shared/ddb';
-import type { MediaRecord } from '../shared/media';
+import { tsMsToSlide, type MediaRecord } from '../shared/media';
 import { AnalysisSchema, captionFacts, reconcileFrames, sanitisePlaces, type Analysis } from './schema';
 import { buildInstruction } from './prompt';
 
@@ -62,9 +62,15 @@ export async function handler(event: AnalyseEvent): Promise<AnalyseResult> {
 
   // Each image is preceded by its timestamp so the model can key its output by
   // the same values, which is what makes {media_id, ts_ms} citations possible.
+  const isCarousel = media.type === 'carousel';
   const content: Array<Record<string, unknown>> = [];
   for (const frame of frames) {
-    content.push({ type: 'text', text: `frame ts_ms=${frame.ts_ms}` });
+    content.push({
+      type: 'text',
+      text: isCarousel
+        ? `slide ${tsMsToSlide(Number(frame.ts_ms))} (ts_ms=${frame.ts_ms})`
+        : `frame ts_ms=${frame.ts_ms}`,
+    });
     content.push({
       type: 'image',
       source: { type: 'base64', media_type: 'image/jpeg', data: await fetchFrame(frame.s3_key as string) },
@@ -75,6 +81,7 @@ export async function handler(event: AnalyseEvent): Promise<AnalyseResult> {
     text: buildInstruction({
       caption: media.caption_normalized ?? media.caption_raw,
       permalink: media.permalink,
+      isCarousel,
     }),
   });
 

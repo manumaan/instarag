@@ -2,8 +2,8 @@
 
 Instagram reel & post analysis with Claude.
 
-**Built so far: Phases 1-4, plus public reel downloading.** Upload a screen recording or
-screenshots, or paste any public reel permalink. A pasted permalink is downloaded with
+**Built so far: Phases 1-6, plus public reel downloading and carousels.** Upload a screen
+recording, a carousel's slides, or screenshots, or paste any public reel permalink. A pasted permalink is downloaded with
 yt-dlp; everything then runs through keyframe extraction on ingest, with progress pushed
 to the browser over a WebSocket, and lands on the reel detail screen as a filmstrip.
 Each reel then gets a Claude vision pass that writes per-frame descriptions, verbatim OCR,
@@ -45,6 +45,24 @@ queued -> [downloading ->] extracting -> analysing -> [transcribing ->] indexing
 The `downloading` leg runs only for a pasted permalink; an upload is already in S3. The
 download also yields the reel's caption, uploader and posted-at date from its public
 metadata, so a URL-sourced reel gets a caption without an OCR pass.
+
+A carousel joins at `analysing`: its slides are already images, so there is nothing to
+fetch, no video to extract from and no audio to transcribe.
+
+## Carousels
+
+Drop several images at once and they become one carousel post rather than several reels;
+videos stay individual. Up to 20 slides.
+
+A carousel is a set of slides, not a timeline, so the upload puts each slide straight into
+the reel's `frames/` prefix and writes a frame row for it. Slides are numbered through
+`ts_ms` — slide 1 is 0ms, slide 2 is 1000ms — which means citations, Lens and the vector
+index needed no changes at all: a citable moment is still `{media_id, ts_ms}`. The UI shows
+"slide 3" where a reel would show "0:12", so the timestamps stay behind the scenes.
+
+The vision pass is told it is looking at slides and asked what the post as a whole is
+saying, since a carousel is usually one argument told across slides — a list, a recipe, a
+before-and-after — rather than a sequence of moments.
 
 ## Speech
 
@@ -104,6 +122,10 @@ Retry is a real re-run. Anything a half-finished pipeline left behind — frames
 segments, caption facts, index documents — is cleared first, so one run's output cannot mix
 with another's. A pasted permalink is fetched again; an uploaded file keeps its original,
 since there is no other copy of it.
+
+A carousel keeps its slides and its cover thumbnail. Its slides are its source material
+rather than something the pipeline derived, so a retry clears only the descriptions and OCR
+written onto them and then re-analyses the same images.
 
 ## Speed
 
@@ -292,6 +314,7 @@ All routes sit behind the Cognito JWT authorizer and take the **id token** in `a
 | Route | Purpose |
 |---|---|
 | `POST /uploads` | Reserve a media id, return a presigned PUT URL (content-type is signed in) |
+| `POST /uploads` with `slides` | Reserve a carousel and return one presigned PUT per slide |
 | `POST /media/{id}/complete` | Confirm the object landed, move the item to `queued` |
 | `POST /media/url` | Register a pasted instagram.com permalink and start fetching it |
 | `GET /media` | Newest-first library listing, `?limit` and `?cursor` |

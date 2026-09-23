@@ -123,6 +123,13 @@ export class Connected extends Construct {
     this.syncFunction.addToRolePolicy(
       new iam.PolicyStatement({ actions: ['dynamodb:PutItem'], resources: [storage.mediaTable.tableArn] }),
     );
+    // A carousel's slides are written straight in as frames.
+    this.syncFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:BatchWriteItem'],
+        resources: [storage.framesTable.tableArn],
+      }),
+    );
     this.syncFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['dynamodb:Query'],

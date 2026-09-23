@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAuthorizeUrl,
+  carouselSlides,
   isIngestable,
   shouldRefresh,
   DEFAULT_SCOPES,
@@ -56,4 +57,45 @@ test('only videos with a media_url can be ingested', () => {
   assert.equal(isIngestable({ id: '2', media_type: 'VIDEO' }), false);
   assert.equal(isIngestable({ id: '3', media_type: 'IMAGE', media_url: 'https://cdn/i.jpg' }), false);
   assert.equal(isIngestable({ id: '4', media_type: 'CAROUSEL_ALBUM', media_url: 'https://cdn/c.jpg' }), false);
+});
+
+test('a carousel is ingestable through its children, a video through its own url', () => {
+  const carousel = {
+    id: '1',
+    media_type: 'CAROUSEL_ALBUM' as const,
+    children: {
+      data: [
+        { id: 'a', media_type: 'IMAGE' as const, media_url: 'https://cdn/1.jpg' },
+        { id: 'b', media_type: 'IMAGE' as const, media_url: 'https://cdn/2.jpg' },
+      ],
+    },
+  };
+  assert.equal(isIngestable(carousel), true);
+  assert.equal(carouselSlides(carousel).length, 2);
+
+  // Children arrive only if the query asked for them; without them there is
+  // nothing to ingest and saying so beats a confusing half-import.
+  assert.equal(isIngestable({ id: '2', media_type: 'CAROUSEL_ALBUM' }), false);
+  // Copyright-flagged children come back without a url.
+  assert.equal(
+    carouselSlides({
+      id: '3',
+      media_type: 'CAROUSEL_ALBUM',
+      children: { data: [{ id: 'c', media_type: 'IMAGE' }] },
+    }).length,
+    0,
+  );
+  // A video slide is not a still: it would need the extraction pipeline.
+  assert.equal(
+    carouselSlides({
+      id: '4',
+      media_type: 'CAROUSEL_ALBUM',
+      children: { data: [{ id: 'd', media_type: 'VIDEO', media_url: 'https://cdn/v.mp4' }] },
+    }).length,
+    0,
+  );
+});
+
+test('a single image post is still skipped: there is nothing to analyse over time', () => {
+  assert.equal(isIngestable({ id: '5', media_type: 'IMAGE', media_url: 'https://cdn/i.jpg' }), false);
 });

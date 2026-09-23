@@ -171,8 +171,10 @@ function baseArgs(): string[] {
 /** Surfaces a login wall as a login wall rather than a generic exit code. */
 function asDownloadError(err: unknown): Error {
   const raw = err instanceof Error ? err.message : String(err);
-  const { message, loginWalled } = explainDownloadFailure(raw);
+  const { message, loginWalled, noVideo } = explainDownloadFailure(raw);
   const error = new Error(message);
-  error.name = loginWalled ? 'InstagramLoginWall' : 'DownloadFailed';
+  // Distinct names so the pipeline does not retry what cannot succeed: neither
+  // a login wall nor a post with no video will change on a second attempt.
+  error.name = noVideo ? 'NoVideoInPost' : loginWalled ? 'InstagramLoginWall' : 'DownloadFailed';
   return error;
 }

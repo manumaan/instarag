@@ -1,6 +1,6 @@
-import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { HeadObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
-import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { BatchWriteCommand, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb, TABLES } from '../shared/ddb';
 import { badRequest, handler, notFound, pathParam } from '../shared/http';
 import type { MediaRecord } from '../shared/media';
@@ -9,6 +9,7 @@ const s3 = new S3Client({});
 const sfn = new SFNClient({});
 const BUCKET = process.env.MEDIA_BUCKET!;
 const STATE_MACHINE_ARN = process.env.STATE_MACHINE_ARN;
+const FRAMES_TABLE = process.env.FRAMES_TABLE!;
 /** How long a job row survives before the jobs table's TTL removes it. */
 const JOB_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -22,8 +23,14 @@ export const main = handler(async (event) => {
   const existing = await ddb.send(new GetCommand({ TableName: TABLES.media, Key: { id } }));
   const media = existing.Item as MediaRecord | undefined;
   if (!media) throw notFound('media not found');
-  if (!media.s3_key) throw badRequest('media has no upload to complete');
+  if (media.type !== 'carousel' && !media.s3_key) {
+    throw badRequest('media has no upload to complete');
+  }
   if (media.status !== 'awaiting_upload') return media; // idempotent
+
+  // A carousel has no single original: its slides are already the frames, so
+  // completion registers them rather than checking one object.
+  if (media.type === 'carousel') return completeCarousel(id, media);
 
   let head;
   try {
@@ -69,3 +76,72 @@ export const main = handler(async (event) => {
 
   return updated.Attributes as MediaRecord;
 });
+
+/**
+ * Registers a carousel's uploaded slides as frames and starts the pipeline
+ * past extraction: there is no video to extract from, the images *are* the
+ * frames.
+ */
+async function completeCarousel(id: string, media: MediaRecord) {
+  const listed = await s3.send(
+    new ListObjectsV2Command({ Bucket: BUCKET, Prefix: `media/${id}/frames/` }),
+  );
+  const objects = (listed.Contents ?? [])
+    .filter((object) => (object.Size ?? 0) > 0)
+    .sort((a, b) => String(a.Key).localeCompare(String(b.Key)));
+
+  if (objects.length === 0) throw badRequest('no slides were uploaded; retry the PUTs');
+
+  const now = new Date().toISOString();
+  const rows = objects.map((object, index) => ({
+    PutRequest: {
+      Item: {
+        media_id: id,
+        // The key encodes the slide's ts_ms, so parse it rather than assume the
+        // listing order matches what was presigned.
+        ts_ms: Number(String(object.Key).split('/').pop()!.split('.')[0]),
+        s3_key: object.Key,
+        kind: 'slide',
+        slide_index: index,
+        created_at: now,
+      },
+    },
+  }));
+  for (let i = 0; i < rows.length; i += 25) {
+    await ddb.send(new BatchWriteCommand({ RequestItems: { [FRAMES_TABLE]: rows.slice(i, i + 25) } }));
+  }
+
+  const updated = await ddb.send(
+    new UpdateCommand({
+      TableName: TABLES.media,
+      Key: { id },
+      UpdateExpression: 'SET #status = :queued, slide_count = :count, cover_s3_key = :cover',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':queued': 'queued',
+        ':count': objects.length,
+        ':cover': objects[0].Key,
+      },
+      ReturnValues: 'ALL_NEW',
+    }),
+  );
+
+  if (STATE_MACHINE_ARN) {
+    await sfn.send(
+      new StartExecutionCommand({
+        stateMachineArn: STATE_MACHINE_ARN,
+        name: `${id}-${Date.now()}`,
+        input: JSON.stringify({
+          mediaId: id,
+          source: media.source,
+          // Skips download, extraction and transcription: slides are frames
+          // already, and a carousel has no audio.
+          kind: 'carousel',
+          jobExpiresAt: String(Math.floor(Date.now() / 1000) + JOB_TTL_SECONDS),
+        }),
+      }),
+    );
+  }
+
+  return updated.Attributes as MediaRecord;
+}

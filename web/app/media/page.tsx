@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import StatusChip from '@/components/StatusChip';
 import AskPanel from '@/components/AskPanel';
 import LensSheet from '@/components/LensSheet';
-import { getMedia, retryMedia, type MediaDetail } from '@/lib/api';
+import { getMedia, momentLabel, retryMedia, type MediaDetail } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
 
 const IN_FLIGHT = ['awaiting_upload', 'queued', 'downloading', 'extracting', 'analysing', 'indexing'];
@@ -84,7 +84,8 @@ function ReelDetail() {
   const { media, frames, transcriptSegments, playbackUrl } = detail;
   const caption = media.caption_normalized ?? media.caption_raw;
   const hashtags = caption?.match(/#[\p{L}\p{N}_]+/gu) ?? [];
-  const isVideo = media.content_type?.startsWith('video/');
+  const isCarousel = media.type === 'carousel';
+  const isVideo = media.content_type?.startsWith('video/') && !isCarousel;
   const selectedFrame = frames.find((f) => f.ts_ms === selected);
 
   return (
@@ -101,7 +102,27 @@ function ReelDetail() {
             {media.uploader && <span className="muted small">@{media.uploader}</span>}
           </div>
 
-          {playbackUrl && isVideo ? (
+          {isCarousel ? (
+            <div className="slides">
+              {selectedFrame?.url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={selectedFrame.url} alt={selectedFrame.description ?? 'slide'} />
+              ) : frames[0]?.url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={frames[0].url} alt={frames[0].description ?? 'first slide'} />
+              ) : (
+                <div className="placeholder">
+                  <p className="muted">
+                    {IN_FLIGHT.includes(media.status) ? 'Working…' : 'No slides were stored.'}
+                  </p>
+                </div>
+              )}
+              <p className="muted small">
+                {media.slide_count ?? frames.length} slide
+                {(media.slide_count ?? frames.length) === 1 ? '' : 's'} — pick one below
+              </p>
+            </div>
+          ) : playbackUrl && isVideo ? (
             <video
               controls
               src={playbackUrl}
@@ -157,7 +178,7 @@ function ReelDetail() {
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   {frame.url && <img src={frame.url} alt={frame.description ?? `frame at ${frame.ts_ms}ms`} />}
-                  <span className="small">{(frame.ts_ms / 1000).toFixed(1)}s</span>
+                  <span className="small">{momentLabel(media, frame.ts_ms)}</span>
                 </button>
               ))
             )}
@@ -187,7 +208,7 @@ function ReelDetail() {
 
           {selectedFrame && (
             <div className="frame-detail">
-              <h2>Frame at {(selectedFrame.ts_ms / 1000).toFixed(1)}s</h2>
+              <h2>{isCarousel ? momentLabel(media, selectedFrame.ts_ms) : `Frame at ${momentLabel(media, selectedFrame.ts_ms)}`}</h2>
               <p>{selectedFrame.description}</p>
               {selectedFrame.ocr_text && (
                 <>
@@ -254,7 +275,7 @@ function ReelDetail() {
                         }}
                         title={`jump to ${(evidence.ts_ms / 1000).toFixed(1)}s`}
                       >
-                        <span className="muted">{(evidence.ts_ms / 1000).toFixed(1)}s</span> “{evidence.text}”
+                        <span className="muted">{momentLabel(media, evidence.ts_ms)}</span> “{evidence.text}”
                       </button>
                     ))}
                   </li>
@@ -265,6 +286,7 @@ function ReelDetail() {
 
           <AskPanel
             mediaId={media.id}
+            label={(citation) => momentLabel(media, citation.ts_ms)}
             onCite={(citation) => {
               setSeekTo(citation.ts_ms);
               setSelected(citation.ts_ms);

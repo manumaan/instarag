@@ -153,6 +153,9 @@ export default function LibraryPage() {
                     <StatusChip media={media} />
                   </div>
                   <h3>{title(media)}</h3>
+                  {media.type === 'carousel' && (
+                    <p className="muted small">carousel · {media.slide_count ?? '?'} slides</p>
+                  )}
                   <p className="muted small">{new Date(media.created_at).toLocaleString()}</p>
                   {media.error && <p className="error small">{media.error}</p>}
                 </Link>

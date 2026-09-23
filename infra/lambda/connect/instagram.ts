@@ -36,6 +36,12 @@ export interface LongLivedToken {
   token_type?: string;
 }
 
+export interface IgChild {
+  id: string;
+  media_type?: 'IMAGE' | 'VIDEO';
+  media_url?: string;
+}
+
 export interface IgMedia {
   id: string;
   caption?: string;
@@ -46,6 +52,8 @@ export interface IgMedia {
   permalink?: string;
   timestamp?: string;
   username?: string;
+  /** Present for CAROUSEL_ALBUM: the slides, in order. */
+  children?: { data?: IgChild[] };
 }
 
 /** Scopes go in one comma-separated parameter. */
@@ -139,6 +147,9 @@ const MEDIA_FIELDS = [
   'permalink',
   'timestamp',
   'username',
+  // A carousel's slides come back only if asked for; without this the images
+  // are invisible and the post looks unusable.
+  'children{id,media_type,media_url}',
 ].join(',');
 
 /** One page of the connected account's own media, newest first. */
@@ -170,9 +181,19 @@ export function shouldRefresh(
 }
 
 /**
- * Reels only reach us as VIDEO with a media_url. Copyright-flagged media comes
- * back without one, and there is nothing to ingest in that case.
+ * Reels reach us as VIDEO with a media_url; a carousel as CAROUSEL_ALBUM whose
+ * children carry the urls. Copyright-flagged media comes back without a
+ * media_url, and there is nothing to ingest in that case.
  */
 export function isIngestable(media: IgMedia): boolean {
-  return Boolean(media.media_url) && media.media_type === 'VIDEO';
+  if (media.media_type === 'VIDEO') return Boolean(media.media_url);
+  if (media.media_type === 'CAROUSEL_ALBUM') return carouselSlides(media).length > 0;
+  return false;
+}
+
+/** A carousel's image slides, in order, skipping any without a url. */
+export function carouselSlides(media: IgMedia): IgChild[] {
+  return (media.children?.data ?? []).filter(
+    (child) => Boolean(child.media_url) && child.media_type !== 'VIDEO',
+  );
 }

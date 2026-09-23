@@ -115,6 +115,9 @@ export class Api extends Construct {
     const completeUpload = makeFn('CompleteUpload', 'complete-upload.ts');
     allow(completeUpload, ['s3:GetObject'], [mediaObjects]); // HeadObject is authorised as GetObject
     allow(completeUpload, ['dynamodb:GetItem', 'dynamodb:UpdateItem'], [storage.mediaTable.tableArn]);
+    // A carousel's completion registers its uploaded slides as frames.
+    allow(completeUpload, ['dynamodb:BatchWriteItem'], [storage.framesTable.tableArn]);
+    allow(completeUpload, ['s3:ListBucket'], [storage.mediaBucket.bucketArn]);
 
     this.completeUploadFunction = completeUpload;
 
@@ -259,6 +262,9 @@ export class Api extends Construct {
       storage.framesTable.tableArn,
       storage.transcriptSegmentsTable.tableArn,
     ]);
+    // A carousel's slide rows are reset rather than deleted — they carry the
+    // s3_key of each slide, which nothing else can reproduce.
+    allow(retryMedia, ['dynamodb:UpdateItem'], [storage.framesTable.tableArn]);
     allow(retryMedia, ['dynamodb:DeleteItem'], [storage.captionFactsTable.tableArn]);
     allow(retryMedia, ['s3:DeleteObject'], [storage.mediaBucket.arnForObjects('media/*')]);
     retryMedia.addToRolePolicy(

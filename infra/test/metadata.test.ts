@@ -79,3 +79,21 @@ test('an empty media response is treated as a wall, not a retryable fault', () =
   assert.equal(observed.loginWalled, true, 'must not be retried');
   assert.match(observed.message, /would not serve this reel without a logged-in session/);
 });
+
+test('a post with no video is not reported as a login wall', () => {
+  // This mattered: "no video formats found" was classified as a wall, so an
+  // image post or carousel told the reader to go and find cookies for a
+  // problem that has nothing to do with authentication.
+  const noVideo = explainDownloadFailure(
+    'yt-dlp exited 1: ERROR: [Instagram] Dx1y: No video formats found!; please report this issue',
+  );
+  assert.equal(noVideo.noVideo, true);
+  assert.equal(noVideo.loginWalled, false, 'must not be mistaken for a login wall');
+  assert.match(noVideo.message, /image post or a carousel/);
+  assert.match(noVideo.message, /Upload its images instead/);
+
+  // A real wall is still a wall.
+  const walled = explainDownloadFailure('yt-dlp exited 1: ERROR: [Instagram] Dx1y: login required');
+  assert.equal(walled.loginWalled, true);
+  assert.equal(walled.noVideo, false);
+});

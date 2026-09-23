@@ -486,6 +486,22 @@ export class Pipeline extends Construct {
      * they cost the sum (~25s of a 75s pipeline); in parallel the transcription
      * poll hides behind the vision call almost entirely.
      */
+    // The same Lambda, a distinct state: a definition cannot visit one state
+    // from two different paths.
+    const analyseCarousel = new tasks.LambdaInvoke(this, 'AnalyseCarousel', {
+      lambdaFunction: this.analyseFunction,
+      payload: sfn.TaskInput.fromObject({ mediaId: sfn.JsonPath.stringAt('$.mediaId') }),
+      payloadResponseOnly: true,
+      resultPath: '$.analysis',
+      taskTimeout: sfn.Timeout.duration(Duration.minutes(5)),
+    });
+    analyseCarousel.addRetry({
+      errors: ['Lambda.ServiceException', 'Lambda.SdkClientException', 'Lambda.TooManyRequestsException', 'ThrottlingException'],
+      interval: Duration.seconds(5),
+      maxAttempts: 3,
+      backoffRate: 2,
+    });
+
     const analyseAndTranscribe = new sfn.Parallel(this, 'AnalyseAndTranscribe', {
       // The branches persist their own results; the next state needs the
       // original input, not an array of branch outputs.
@@ -507,12 +523,35 @@ export class Pipeline extends Construct {
       .next(analyseAndTranscribe)
       .next(indexOnwards);
 
-    // A pasted permalink has to be fetched first; an upload is already in S3.
+    /**
+     * A carousel's slides were registered as frames at upload time, so there is
+     * nothing to download, no video to extract from and no audio to transcribe.
+     * It joins the pipeline at the vision pass.
+     */
+    const analyseOnwards = setMediaStatus('MarkAnalysingSlides', 'analysing')
+      .next(analyseCarousel)
+      .next(indexOnwards);
+
+    /*
+     * A pasted permalink has to be fetched first; an upload is already in S3.
+     *
+     * Both conditions are guarded with isPresent because a Choice whose path is
+     * absent does not fall through to the next condition — it fails the whole
+     * execution with States.Runtime "references an invalid value". An upload
+     * carries no `kind`, so the unguarded version broke every reel while the
+     * carousel path it was added for still worked.
+     */
+    const isCarousel = sfn.Condition.and(
+      sfn.Condition.isPresent('$.kind'),
+      sfn.Condition.stringEquals('$.kind', 'carousel'),
+    );
+    const isUrl = sfn.Condition.and(
+      sfn.Condition.isPresent('$.source'),
+      sfn.Condition.stringEquals('$.source', 'url'),
+    );
     const needsDownload = new sfn.Choice(this, 'NeedsDownload')
-      .when(
-        sfn.Condition.stringEquals('$.source', 'url'),
-        setMediaStatus('MarkDownloading', 'downloading').next(downloadReel).next(extractOnwards),
-      )
+      .when(isCarousel, analyseOnwards)
+      .when(isUrl, setMediaStatus('MarkDownloading', 'downloading').next(downloadReel).next(extractOnwards))
       .otherwise(extractOnwards);
 
     const definition = startJob.next(needsDownload);
@@ -525,6 +564,7 @@ export class Pipeline extends Construct {
       downloadReel,
       extract,
       analyseAndTranscribe,
+      analyseCarousel,
       indexFrames,
       markReady,
     ]) {

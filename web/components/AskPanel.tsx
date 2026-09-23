@@ -18,10 +18,13 @@ export default function AskPanel({
   mediaId,
   onCite,
   renderCitation,
+  label,
 }: {
   mediaId?: string;
   onCite?: (citation: Citation) => void;
   renderCitation?: (citation: Citation) => React.ReactNode;
+  /** A carousel cites slides, not seconds. */
+  label?: (citation: Citation) => string;
 }) {
   const [question, setQuestion] = useState('');
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -75,7 +78,7 @@ export default function AskPanel({
                         <span key={j}>{renderCitation(citation)}</span>
                       ) : (
                         <button key={j} className="evidence" onClick={() => onCite?.(citation)}>
-                          {(citation.ts_ms / 1000).toFixed(1)}s
+                          {label ? label(citation) : `${(citation.ts_ms / 1000).toFixed(1)}s`}
                         </button>
                       ),
                     )}
