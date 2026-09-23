@@ -265,9 +265,11 @@ test('a carousel skips download, extraction and transcription', () => {
   );
 });
 
-test('the entry choice tolerates an absent field', () => {
+test('every choice tolerates an absent field', () => {
   const states = stateMachineGraph(synth());
-  const choices = (states.NeedsDownload.Choices ?? []) as Array<Record<string, unknown>>;
+  const choiceStates = Object.entries(states).filter(([, state]) => state.Type === 'Choice');
+  assert.ok(choiceStates.length >= 2, 'expected the entry choice and the post-download choice');
+  const choices = choiceStates.flatMap(([, state]) => (state.Choices ?? []) as Array<Record<string, unknown>>);
 
   // Step Functions does not treat a missing path as "condition false": it fails
   // the execution with States.Runtime. `kind` is absent on every upload and
@@ -295,6 +297,23 @@ test('the entry choice tolerates an absent field', () => {
     comparisons(choice).filter((part) => part.IsPresent === true).map((part) => part.Variable),
   );
   assert.ok(allGuards.includes('$.kind'), '$.kind must be guarded: uploads do not set it');
+});
+
+test('a pasted link reaches either the reel path or the slide path', () => {
+  const states = stateMachineGraph(synth());
+
+  // Which one a permalink is cannot be known before the metadata pass, so the
+  // branch has to sit after Download rather than at the entry choice.
+  const afterDownload = reachableFrom(states, 'Download');
+  assert.ok(afterDownload.has('Extract'), 'a downloaded reel must still reach extraction');
+  assert.ok(
+    afterDownload.has('AnalyseCarousel'),
+    'a downloaded image post must reach the slide analysis, not extraction',
+  );
+  assert.ok(
+    !reachableFrom(states, 'MarkAnalysingSlides').has('Extract'),
+    'slides must not fall through into extraction: there is no video to extract',
+  );
 });
 
 test('Bedrock access is invoke-only and limited to named models', () => {

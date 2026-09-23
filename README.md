@@ -47,12 +47,15 @@ download also yields the reel's caption, uploader and posted-at date from its pu
 metadata, so a URL-sourced reel gets a caption without an OCR pass.
 
 A carousel joins at `analysing`: its slides are already images, so there is nothing to
-fetch, no video to extract from and no audio to transcribe.
+extract from and no audio to transcribe. A pasted link still downloads first, because what
+a permalink points at is only known once its metadata has been read — so the reel/slides
+branch sits after the download, not before it.
 
 ## Carousels
 
 Drop several images at once and they become one carousel post rather than several reels;
-videos stay individual. Up to 20 slides.
+videos stay individual. Up to 20 slides. **Pasting a carousel or image-post link works the
+same way** — the slides are fetched from the link, at full resolution, with the caption.
 
 A carousel is a set of slides, not a timeline, so the upload puts each slide straight into
 the reel's `frames/` prefix and writes a frame row for it. Slides are numbered through
@@ -63,6 +66,15 @@ index needed no changes at all: a citable moment is still `{media_id, ts_ms}`. T
 The vision pass is told it is looking at slides and asked what the post as a whole is
 saying, since a carousel is usually one argument told across slides — a list, a recipe, a
 before-and-after — rather than a sequence of moments.
+
+Slides fetched from a link are re-encoded to 1568px on the long edge rather than the 720px
+keyframes get: a slide is read, not skimmed, and 1568 is the point beyond which Claude's
+vision downsizes an image anyway. On a real 11-slide post every slide's text came back
+verbatim, and asking "what does it say to book first?" answered from slide 8.
+
+A video card inside a mixed carousel is skipped, and the slide numbering keeps its place —
+slide 3 is still the third card of the post. Analysing it would mean running the whole reel
+pipeline for one slide.
 
 ## Speech
 

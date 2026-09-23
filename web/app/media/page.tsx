@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import StatusChip from '@/components/StatusChip';
 import AskPanel from '@/components/AskPanel';
 import LensSheet from '@/components/LensSheet';
-import { getMedia, momentLabel, retryMedia, type MediaDetail } from '@/lib/api';
+import { getMedia, isSlideshow, momentLabel, retryMedia, type MediaDetail } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
 
 const IN_FLIGHT = ['awaiting_upload', 'queued', 'downloading', 'extracting', 'analysing', 'indexing'];
@@ -84,7 +84,7 @@ function ReelDetail() {
   const { media, frames, transcriptSegments, playbackUrl } = detail;
   const caption = media.caption_normalized ?? media.caption_raw;
   const hashtags = caption?.match(/#[\p{L}\p{N}_]+/gu) ?? [];
-  const isCarousel = media.type === 'carousel';
+  const isCarousel = isSlideshow(media);
   const isVideo = media.content_type?.startsWith('video/') && !isCarousel;
   const selectedFrame = frames.find((f) => f.ts_ms === selected);
 

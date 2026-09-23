@@ -124,6 +124,14 @@ export class Pipeline extends Construct {
         resources: [storage.mediaTable.tableArn],
       }),
     );
+    // An image post's slides are registered as frames here, the same way the
+    // extractor registers keyframes: for a carousel there is no extraction step.
+    this.downloadFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:BatchWriteItem'],
+        resources: [storage.framesTable.tableArn],
+      }),
+    );
 
     // Vision pass: one Bedrock call carrying every keyframe of the reel.
     this.analyseFunction = new NodejsFunction(this, 'AnalyseReel', {
@@ -549,9 +557,25 @@ export class Pipeline extends Construct {
       sfn.Condition.isPresent('$.source'),
       sfn.Condition.stringEquals('$.source', 'url'),
     );
+    /*
+     * A pasted permalink can turn out to be either. Only the metadata pass knows
+     * which, so the branch happens on what Download reported rather than on the
+     * url: a reel has a video to extract from, an image post has slides that are
+     * frames already and joins at the vision pass.
+     */
+    const afterDownload = new sfn.Choice(this, 'DownloadedSlides')
+      .when(
+        sfn.Condition.and(
+          sfn.Condition.isPresent('$.download.kind'),
+          sfn.Condition.stringEquals('$.download.kind', 'carousel'),
+        ),
+        analyseOnwards,
+      )
+      .otherwise(extractOnwards);
+
     const needsDownload = new sfn.Choice(this, 'NeedsDownload')
       .when(isCarousel, analyseOnwards)
-      .when(isUrl, setMediaStatus('MarkDownloading', 'downloading').next(downloadReel).next(extractOnwards))
+      .when(isUrl, setMediaStatus('MarkDownloading', 'downloading').next(downloadReel).next(afterDownload))
       .otherwise(extractOnwards);
 
     const definition = startJob.next(needsDownload);

@@ -1,11 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
+  classifyPost,
   explainDownloadFailure,
   normalizeCaption,
   takenAtFrom,
   toMediaFields,
+  type YtDlpInfo,
 } from '../extract/src/metadata';
+import { SLIDE_INTERVAL_MS as EXTRACT_SLIDE_INTERVAL_MS } from '../extract/src/download';
+import { SLIDE_INTERVAL_MS } from '../lambda/shared/media';
+
+/**
+ * A real `yt-dlp --dump-single-json --ignore-no-formats-error` response for a
+ * public carousel, trimmed to three slides. Captured rather than invented: the
+ * shape that matters here — entries with no formats and a thumbnail each — is
+ * Instagram's, and an invented fixture would only assert what we assumed.
+ */
+const carouselInfo = JSON.parse(
+  readFileSync(new URL('./fixtures/carousel-info.json', import.meta.url), 'utf8'),
+) as YtDlpInfo;
 
 const ZWSP = String.fromCharCode(0x200b);
 const BOM = String.fromCharCode(0xfeff);
@@ -96,4 +111,60 @@ test('a post with no video is not reported as a login wall', () => {
   const walled = explainDownloadFailure('yt-dlp exited 1: ERROR: [Instagram] Dx1y: login required');
   assert.equal(walled.loginWalled, true);
   assert.equal(walled.noVideo, false);
+});
+
+test('classifyPost reads a real carousel response as slides', () => {
+  const shape = classifyPost(carouselInfo);
+  assert.equal(shape.kind, 'slides');
+  if (shape.kind !== 'slides') return;
+
+  assert.equal(shape.slides.length, 3);
+  assert.deepEqual(shape.slides.map((s) => s.position), [1, 2, 3]);
+  assert.equal(shape.videoSlidesSkipped, 0);
+  for (const slide of shape.slides) {
+    assert.match(slide.url, /^https:\/\//);
+    // The uncropped, unresized variant: a square crop would cut text off a slide.
+    assert.match(slide.url, /stp=dst-jpg_e35_tt6/);
+  }
+  // The caption comes from the post, so no OCR pass is needed for it.
+  assert.ok(toMediaFields(carouselInfo).caption_raw);
+});
+
+test('classifyPost still recognises a reel', () => {
+  const shape = classifyPost({ id: 'abc', formats: [{ ext: 'mp4' }], thumbnail: 'https://cdn/x.jpg' });
+  assert.equal(shape.kind, 'video');
+});
+
+test('classifyPost treats a single image post as one slide', () => {
+  const shape = classifyPost({ id: 'abc', thumbnail: 'https://cdn/only.jpg' });
+  assert.equal(shape.kind, 'slides');
+  if (shape.kind !== 'slides') return;
+  assert.deepEqual(shape.slides, [{ position: 1, shortcode: 'abc', url: 'https://cdn/only.jpg' }]);
+});
+
+test('a video card in a mixed carousel is skipped without renumbering the rest', () => {
+  const shape = classifyPost({
+    entries: [
+      { id: 'a', thumbnail: 'https://cdn/1.jpg' },
+      { id: 'b', formats: [{ ext: 'mp4' }], thumbnail: 'https://cdn/2.jpg' },
+      { id: 'c', thumbnail: 'https://cdn/3.jpg' },
+    ],
+  });
+  assert.equal(shape.kind, 'slides');
+  if (shape.kind !== 'slides') return;
+  assert.equal(shape.videoSlidesSkipped, 1);
+  // Slide 3 must still be the third card of the post, or every citation after
+  // the skipped one points at the wrong picture.
+  assert.deepEqual(shape.slides.map((s) => s.position), [1, 3]);
+});
+
+test('classifyPost reports a post with neither video nor images as empty', () => {
+  assert.equal(classifyPost({ id: 'abc' }).kind, 'empty');
+  assert.equal(classifyPost({ entries: [null, null] }).kind, 'empty');
+});
+
+test('the slide interval agrees across the two bundles', () => {
+  // download.ts cannot import the shared constant: infra/extract is built on its
+  // own. If these drift, every slide citation silently points at another slide.
+  assert.equal(EXTRACT_SLIDE_INTERVAL_MS, SLIDE_INTERVAL_MS);
 });

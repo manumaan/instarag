@@ -22,6 +22,23 @@ const JPEG_QSCALE = '5';
 const JPEG_PIX_FMT = 'yuvj420p';
 const SCALE_FILTER = `scale=w='if(gt(iw,ih),${LONGEST_EDGE},-2)':h='if(gt(iw,ih),-2,${LONGEST_EDGE})'`;
 
+/**
+ * Slides get more pixels than keyframes: 1568 on the long edge.
+ *
+ * A keyframe is skimmed for what it shows, and 720 comes from a 720p video
+ * anyway. A carousel slide is usually read — a list, a recipe, a set of tips —
+ * and arrives as a 3000px original, so 720 would throw away the body text the
+ * post is made of. 1568 is where Claude's vision downsizes an image regardless,
+ * so it is the most detail the model can use and the least we can discard.
+ */
+const SLIDE_LONGEST_EDGE = 1568;
+/**
+ * min(), so a slide smaller than the cap is left alone. Upscaling it would cost
+ * tokens for pixels carrying no more information than the original had.
+ */
+const SLIDE_SCALE_FILTER =
+  `scale=w='if(gt(iw,ih),min(iw,${SLIDE_LONGEST_EDGE}),-2)':h='if(gt(iw,ih),-2,min(ih,${SLIDE_LONGEST_EDGE}))'`;
+
 export function run(
   bin: string,
   args: string[],
@@ -107,6 +124,18 @@ export async function convertStill(input: string, outFile: string): Promise<Extr
     outFile,
   ]);
   return { tsMs: 0, file: outFile };
+}
+
+/** Re-encodes a carousel slide fetched from Instagram's CDN into a frame JPEG. */
+export async function convertSlide(input: string, outFile: string): Promise<void> {
+  await run(FFMPEG, [
+    '-nostdin', '-y',
+    '-i', input,
+    '-vf', SLIDE_SCALE_FILTER,
+    '-q:v', JPEG_QSCALE,
+    '-pix_fmt', JPEG_PIX_FMT,
+    outFile,
+  ]);
 }
 
 /** showinfo prints one line per emitted frame; pts_time is that frame's timestamp. */

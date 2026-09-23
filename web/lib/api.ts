@@ -48,9 +48,19 @@ export interface Media {
 export const SLIDE_INTERVAL_MS = 1000;
 export const tsMsToSlide = (tsMs: number) => Math.round(tsMs / SLIDE_INTERVAL_MS) + 1;
 
-/** A carousel has no timeline, so label its frames by slide instead. */
-export const momentLabel = (media: Pick<Media, 'type'>, tsMs: number) =>
-  media.type === 'carousel' ? `Slide ${tsMsToSlide(tsMs)}` : `${(tsMs / 1000).toFixed(1)}s`;
+/**
+ * Whether this record is slides rather than a timeline.
+ *
+ * Not `type === 'carousel'` alone: a pasted link to a single-image post is a
+ * `post` with one slide, and calling that a carousel would be a lie in the data
+ * model. slide_count is what both cases have in common.
+ */
+export const isSlideshow = (media: Pick<Media, 'type' | 'slide_count'>) =>
+  media.type === 'carousel' || (media.slide_count ?? 0) > 0;
+
+/** Slides have no timeline, so label their frames by slide instead. */
+export const momentLabel = (media: Pick<Media, 'type' | 'slide_count'>, tsMs: number) =>
+  isSlideshow(media) ? `Slide ${tsMsToSlide(tsMs)}` : `${(tsMs / 1000).toFixed(1)}s`;
 
 export interface Frame {
   media_id: string;

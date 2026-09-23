@@ -5,7 +5,7 @@ import Link from 'next/link';
 import DropZone from '@/components/DropZone';
 import LensSheet from '@/components/LensSheet';
 import StatusChip from '@/components/StatusChip';
-import { deleteMedia, listMedia, retryMedia, type Media } from '@/lib/api';
+import { deleteMedia, isSlideshow, listMedia, retryMedia, type Media } from '@/lib/api';
 import { subscribeToMedia } from '@/lib/ws';
 
 const IN_FLIGHT: Media['status'][] = [
@@ -153,8 +153,10 @@ export default function LibraryPage() {
                     <StatusChip media={media} />
                   </div>
                   <h3>{title(media)}</h3>
-                  {media.type === 'carousel' && (
-                    <p className="muted small">carousel · {media.slide_count ?? '?'} slides</p>
+                  {isSlideshow(media) && (
+                    <p className="muted small">
+                      {media.slide_count === 1 ? 'image post' : `carousel · ${media.slide_count ?? '?'} slides`}
+                    </p>
                   )}
                   <p className="muted small">{new Date(media.created_at).toLocaleString()}</p>
                   {media.error && <p className="error small">{media.error}</p>}
