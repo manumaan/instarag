@@ -10,8 +10,15 @@ const webOrigins = (app.node.tryGetContext('webOrigins') ?? 'http://localhost:30
   .map((o: string) => o.trim().replace(/\/$/, ''))
   .filter(Boolean);
 
-/** Data survives `cdk destroy` when true. Default false while this is a skeleton. */
-const retainData = app.node.tryGetContext('retainData') === 'true';
+/**
+ * Data survives `cdk destroy`, and gets PITR and S3 versioning, when true.
+ *
+ * Defaults to **on**, and off has to be asked for: the default was false while
+ * this was a skeleton, and it stayed false once the library held reels that
+ * exist nowhere else. A throwaway stack is the unusual case now, so it is the
+ * one that names itself — `-c retainData=false`.
+ */
+const retainData = app.node.tryGetContext('retainData') !== 'false';
 
 const retentionDaysRaw = app.node.tryGetContext('retentionDays');
 const retentionDays = retentionDaysRaw ? Number(retentionDaysRaw) : undefined;
@@ -43,6 +50,23 @@ const maxOcu = Number(app.node.tryGetContext('maxOcu') ?? 2);
  */
 const instagramAppId = app.node.tryGetContext('instagramAppId') ?? '';
 
+/**
+ * Where alarms are emailed. Deliberately not defaulted: an address baked into
+ * the repo is both a privacy leak and wrong for anyone else deploying this.
+ * Without it the topic still exists, so subscribing later is one CLI call.
+ */
+const alarmEmail = app.node.tryGetContext('alarmEmail') || undefined;
+
+/** Monthly spend that should raise an alarm. Idle is about $2. */
+const monthlyBudget = Number(app.node.tryGetContext('monthlyBudget') ?? 20);
+
+/**
+ * Bedrock input tokens in one hour that would mean something is looping. A reel
+ * is roughly 10k, so this is about fifty reels an hour — far above real use,
+ * far below a runaway.
+ */
+const hourlyTokenBudget = Number(app.node.tryGetContext('hourlyTokenBudget') ?? 500_000);
+
 new ReelLensStack(app, 'ReelLens', {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1' },
   webOrigins,
@@ -53,5 +77,8 @@ new ReelLensStack(app, 'ReelLens', {
   embeddingModel,
   maxOcu,
   instagramAppId,
-  description: 'Reel Lens - Instagram reel/post analysis (Phase 1 skeleton)',
+  alarmEmail,
+  monthlyBudget,
+  hourlyTokenBudget,
+  description: 'Reel Lens - Instagram reel/post analysis',
 });

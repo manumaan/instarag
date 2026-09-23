@@ -45,17 +45,21 @@ function reachableFrom(states: Record<string, Record<string, unknown>>, from: st
   return seen;
 }
 
-function synth() {
+function synth(overrides: { retainData?: boolean } = {}) {
   const app = new App();
   const stack = new ReelLensStack(app, 'TestStack', {
     env: { account: '123456789012', region: 'us-east-1' },
     webOrigins: ['http://localhost:3000'],
-    retainData: false,
+    // Defaults to what is actually deployed, so the rest of the suite exercises
+    // the real configuration rather than a throwaway one.
+    retainData: overrides.retainData ?? true,
     analysisModel: 'us.anthropic.claude-sonnet-5',
     maxFrames: 20,
     embeddingModel: 'amazon.titan-embed-image-v1',
     maxOcu: 2,
     instagramAppId: '1234567890',
+    monthlyBudget: 20,
+    hourlyTokenBudget: 500_000,
   });
   return Template.fromStack(stack);
 }
@@ -615,4 +619,124 @@ test('every handler that purges the index has the collection endpoint', () => {
       `${name} can call the index but has no SEARCH_ENDPOINT`,
     );
   }
+});
+
+/**
+ * The ephemeral ones: live WebSocket connection ids, swept by TTL. Nothing here
+ * outlives a page refresh, so there is nothing to recover.
+ */
+const EPHEMERAL_TABLES = ['StorageConnectionsTable'];
+
+test('every table holding anything worth keeping has PITR and is retained', () => {
+  const template = synth();
+  const tables = Object.entries(template.findResources('AWS::DynamoDB::Table')).filter(
+    ([logicalId]) => !EPHEMERAL_TABLES.some((name) => logicalId.startsWith(name)),
+  );
+
+  // Eight: media, caption facts, transcript segments, threads, messages, frames,
+  // jobs, and the Instagram token table. A ninth appearing here without PITR is
+  // the case this test exists for.
+  assert.equal(tables.length, 8, 'a table was added or removed; decide whether it needs PITR');
+
+  for (const [logicalId, table] of tables) {
+    assert.equal(
+      table.Properties.PointInTimeRecoverySpecification?.PointInTimeRecoveryEnabled,
+      true,
+      `${logicalId} has no point-in-time recovery: a bad write or a stray purge would be final`,
+    );
+    // RETAIN and PITR answer different questions, so both are asserted.
+    assert.equal(table.DeletionPolicy, 'Retain', `${logicalId} would be deleted with the stack`);
+    assert.equal(table.UpdateReplacePolicy, 'Retain', `${logicalId} would be dropped on replacement`);
+  }
+});
+
+test('the media bucket keeps versions, and sweeps the ones it no longer needs', () => {
+  const template = synth();
+  const [bucket] = Object.values(template.findResources('AWS::S3::Bucket')).filter(
+    (b) => b.Properties.VersioningConfiguration,
+  );
+  assert.ok(bucket, 'no bucket is versioned: an overwritten upload has no other copy');
+  assert.equal(bucket.Properties.VersioningConfiguration.Status, 'Enabled');
+  assert.equal(bucket.DeletionPolicy, 'Retain');
+
+  const rules = bucket.Properties.LifecycleConfiguration.Rules as Array<Record<string, unknown>>;
+  // Versioning without these grows forever: every delete leaves the old version
+  // and a marker behind.
+  assert.ok(
+    rules.some((rule) => (rule.NoncurrentVersionExpiration as { NoncurrentDays?: number })?.NoncurrentDays),
+    'old versions are never expired',
+  );
+  assert.ok(rules.some((rule) => rule.ExpiredObjectDeleteMarker === true), 'delete markers accumulate');
+});
+
+test('the token key is retained, because destroying it destroys the token', () => {
+  const template = synth();
+  const keys = Object.values(template.findResources('AWS::KMS::Key'));
+  assert.equal(keys.length, 1);
+  assert.equal(keys[0].DeletionPolicy, 'Retain');
+});
+
+test('retainData=false still gives a throwaway stack', () => {
+  // The escape hatch has to keep working: a scratch stack should take its data
+  // with it rather than leaving tables behind to bill for.
+  const template = synth({ retainData: false });
+  for (const [, table] of Object.entries(template.findResources('AWS::DynamoDB::Table'))) {
+    assert.equal(table.DeletionPolicy, 'Delete');
+    assert.notEqual(table.Properties.PointInTimeRecoverySpecification?.PointInTimeRecoveryEnabled, true);
+  }
+  const buckets = Object.values(template.findResources('AWS::S3::Bucket'));
+  assert.ok(!buckets.some((b) => b.Properties.VersioningConfiguration), 'no versioning without retainData');
+});
+
+test('every alarm notifies, and the pipeline ones exist', () => {
+  const template = synth();
+  const alarms = Object.entries(template.findResources('AWS::CloudWatch::Alarm'));
+  assert.ok(alarms.length >= 7, `expected the pipeline, Bedrock, OCU and spend alarms, found ${alarms.length}`);
+
+  for (const [logicalId, alarm] of alarms) {
+    // An alarm with no action is decoration: it goes red where nobody looks.
+    assert.ok(
+      (alarm.Properties.AlarmActions ?? []).length > 0,
+      `${logicalId} has no action, so nothing is told when it fires`,
+    );
+    assert.ok(alarm.Properties.AlarmDescription, `${logicalId} has no description`);
+  }
+
+  // The two silent failures that motivated this: an execution that fails, and a
+  // pipeline handler that throws where no user is waiting on a response.
+  const metrics = alarms.map(([, a]) => a.Properties.MetricName ?? 'expression');
+  assert.ok(metrics.includes('ExecutionsFailed'), 'nothing watches for a failed ingest');
+  assert.ok(
+    alarms.some(([, a]) => (a.Properties.Metrics ?? []).length >= 5),
+    'no summed alarm over the pipeline handlers',
+  );
+});
+
+test('the OCU alarm is not pinned to a collection group id', () => {
+  const template = synth();
+  const [ocu] = Object.values(template.findResources('AWS::CloudWatch::Alarm')).filter((alarm) =>
+    JSON.stringify(alarm.Properties).includes('SearchOCU'),
+  );
+  assert.ok(ocu, 'nothing watches whether the index scales back down');
+
+  // OCU is reported per CollectionGroupId, and redeploys create new ones. An
+  // alarm naming one would stop matching without ever going red.
+  const body = JSON.stringify(ocu.Properties);
+  assert.ok(!body.includes('CollectionGroupId'), 'the OCU alarm is pinned to a group id');
+  assert.match(body, /SELECT .*SearchOCU.*FROM/, 'expected a Metrics Insights query');
+});
+
+test('no email address is baked into the template', () => {
+  // The alarm address is context-only: a real address in the repo is both a
+  // privacy leak and wrong for anyone else deploying this.
+  const template = synth();
+  const subscriptions = template.findResources('AWS::SNS::Subscription');
+  assert.equal(Object.keys(subscriptions).length, 0);
+  // Email-shaped, not merely containing '@': the WebSocket management ARN has
+  // an @connections path in it, which is not an address.
+  const emailShaped = /[\w.+-]+@[\w-]+\.[\w.]{2,}/;
+  assert.ok(
+    !emailShaped.test(JSON.stringify(template.toJSON())),
+    'an address reached the template',
+  );
 });

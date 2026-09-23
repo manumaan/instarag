@@ -18,6 +18,8 @@ export interface ConnectedProps {
   readonly redirectUri: string;
   /** Instagram app id. Not a secret, unlike the app secret. */
   readonly appId: string;
+  /** Keep the token table and its key when the stack goes. */
+  readonly retainData: boolean;
 }
 
 const LAMBDA_DIR = path.join(__dirname, '..', 'lambda', 'connect');
@@ -47,13 +49,16 @@ export class Connected extends Construct {
   constructor(scope: Construct, id: string, props: ConnectedProps) {
     super(scope, id);
     const { storage } = props;
+    const removalPolicy = props.retainData ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
 
     // A customer-managed key, not the AWS-owned default: this table holds a
     // credential for someone's Instagram account.
     this.key = new kms.Key(this, 'TokenKey', {
       description: 'Reel Lens Instagram token encryption',
       enableKeyRotation: true,
-      removalPolicy: RemovalPolicy.DESTROY,
+      // Destroying the key destroys the token with it, unrecoverably: the
+      // ciphertext in the table is worthless without it.
+      removalPolicy,
     });
 
     this.table = new dynamodb.Table(this, 'ConnectionTable', {
@@ -63,7 +68,10 @@ export class Connected extends Construct {
       encryptionKey: this.key,
       // OAuth state rows clean themselves up.
       timeToLiveAttribute: 'expires_at_epoch',
-      removalPolicy: RemovalPolicy.DESTROY,
+      // Losing this table means re-authorising Instagram by hand, which is the
+      // very failure the refresh schedule exists to prevent.
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: props.retainData },
+      removalPolicy,
     });
 
     this.appSecret = new secretsmanager.Secret(this, 'AppSecret', {

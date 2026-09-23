@@ -8,6 +8,7 @@ import { Realtime } from './realtime';
 import { Search } from './search';
 import { Hosting } from './hosting';
 import { Connected } from './connected';
+import { Observability } from './observability';
 
 export interface ReelLensStackProps extends StackProps {
   readonly webOrigins: string[];
@@ -19,6 +20,12 @@ export interface ReelLensStackProps extends StackProps {
   readonly maxOcu: number;
   /** Instagram app id for connected mode. Empty until MJ creates the Meta app. */
   readonly instagramAppId: string;
+  /** Where alarms are emailed. Left unset, the topic exists with no subscriber. */
+  readonly alarmEmail?: string;
+  /** Monthly spend, in USD, that should raise an alarm. */
+  readonly monthlyBudget: number;
+  /** Bedrock input tokens per hour that would mean something is looping. */
+  readonly hourlyTokenBudget: number;
 }
 
 /**
@@ -50,6 +57,7 @@ export class ReelLensStack extends Stack {
     // the API behind the app's own auth.
     const connected = new Connected(this, 'Connected', {
       storage,
+      retainData: props.retainData,
       appId: props.instagramAppId,
       redirectUri: `${hosting.origin}/connect/callback/`,
     });
@@ -72,6 +80,22 @@ export class ReelLensStack extends Stack {
       embeddingModel: props.embeddingModel,
     });
     const realtime = new Realtime(this, 'Realtime', { storage, auth });
+
+    // The pipeline's own handlers: these run asynchronously, so a throw here is
+    // invisible unless something is watching for it.
+    const observability = new Observability(this, 'Observability', {
+      stateMachine: pipeline.stateMachine,
+      pipelineFunctions: [
+        pipeline.downloadFunction,
+        pipeline.extractFunction,
+        pipeline.analyseFunction,
+        pipeline.storeTranscriptFunction,
+        pipeline.indexFunction,
+      ],
+      alarmEmail: props.alarmEmail,
+      monthlyBudget: props.monthlyBudget,
+      hourlyTokenBudget: props.hourlyTokenBudget,
+    });
 
     // Every ingest route kicks off the pipeline: a completed upload and an API
     // sync go straight to extraction, a pasted permalink is downloaded first.
@@ -96,5 +120,6 @@ export class ReelLensStack extends Stack {
     new CfnOutput(this, 'AnalysisModel', { value: props.analysisModel });
     new CfnOutput(this, 'WebSearchSecretArn', { value: api.webSearchSecret.secretArn });
     new CfnOutput(this, 'SiteBucketName', { value: hosting.bucket.bucketName });
+    new CfnOutput(this, 'AlarmTopicArn', { value: observability.topic.topicArn });
   }
 }

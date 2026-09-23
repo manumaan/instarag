@@ -45,12 +45,33 @@ export class Storage extends Construct {
 
     const removalPolicy = props.retainData ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
 
+    /**
+     * Applied to every table holding something worth keeping, rather than
+     * table by table, so one added later cannot quietly miss it. RETAIN and
+     * PITR answer different questions: RETAIN keeps the table when the stack
+     * goes, PITR is the only way back from a bad write or an accidental purge
+     * inside a table that still exists. A test asserts the coverage.
+     */
+    const durable = {
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: props.retainData },
+      removalPolicy,
+    };
+
     this.mediaBucket = new s3.Bucket(this, 'MediaBucket', {
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       removalPolicy,
       autoDeleteObjects: !props.retainData,
+      /*
+       * Retaining the bucket does not protect what is in it: an uploaded reel
+       * has no other copy anywhere, so an overwrite or a stray delete is
+       * final. Versioning is what makes those recoverable — and note it
+       * changes delete semantics, so the rules below sweep old versions and
+       * the delete markers left behind.
+       */
+      versioned: props.retainData,
       cors: [
         {
           allowedOrigins: props.webOrigins,
@@ -65,6 +86,17 @@ export class Storage extends Construct {
         // Lens query screenshots are used once, to search with. Nothing refers
         // to them afterwards, so they expire rather than accumulate.
         { id: 'lens-queries', prefix: 'lens/', expiration: Duration.days(1) },
+        ...(props.retainData
+          ? [
+              // Long enough to notice and undo a mistake, short enough that old
+              // versions of a 10 MB reel do not accumulate forever.
+              { id: 'expire-old-versions', noncurrentVersionExpiration: Duration.days(30) },
+              // A delete on a versioned bucket leaves a marker behind rather
+              // than removing the key; this clears the ones with nothing under
+              // them. Its own rule: S3 rejects it alongside an expiration.
+              { id: 'expire-delete-markers', expiredObjectDeleteMarker: true },
+            ]
+          : []),
         ...(props.retentionDays
           ? [{ id: 'media-retention', prefix: 'media/', expiration: Duration.days(props.retentionDays) }]
           : []),
@@ -73,11 +105,9 @@ export class Storage extends Construct {
 
     this.mediaTable = new dynamodb.Table(this, 'MediaTable', {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      ...durable,
       // Feeds the WebSocket broadcaster: every status change is pushed to the UI.
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
-      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: props.retainData },
-      removalPolicy,
     });
     // Library grid: one hot partition is fine for a single-user library.
     this.mediaTable.addGlobalSecondaryIndex({
@@ -90,8 +120,7 @@ export class Storage extends Construct {
     // One row per media item: hashtags, mentions, entities, places, language, cta.
     this.captionFactsTable = new dynamodb.Table(this, 'CaptionFactsTable', {
       partitionKey: { name: 'media_id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy,
+      ...durable,
     });
 
     // One row per spoken segment, keyed like frames so a citation can point at
@@ -99,14 +128,12 @@ export class Storage extends Construct {
     this.transcriptSegmentsTable = new dynamodb.Table(this, 'TranscriptSegmentsTable', {
       partitionKey: { name: 'media_id', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'start_ms', type: dynamodb.AttributeType.NUMBER },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy,
+      ...durable,
     });
 
     this.threadsTable = new dynamodb.Table(this, 'ThreadsTable', {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy,
+      ...durable,
     });
     this.threadsTable.addGlobalSecondaryIndex({
       indexName: Storage.THREADS_BY_CREATED_AT,
@@ -119,8 +146,7 @@ export class Storage extends Construct {
     this.messagesTable = new dynamodb.Table(this, 'MessagesTable', {
       partitionKey: { name: 'thread_id', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'created_at', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy,
+      ...durable,
     });
 
     // Sparse: only items with a permalink appear, which is what makes a
@@ -135,14 +161,12 @@ export class Storage extends Construct {
     this.framesTable = new dynamodb.Table(this, 'FramesTable', {
       partitionKey: { name: 'media_id', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'ts_ms', type: dynamodb.AttributeType.NUMBER },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy,
+      ...durable,
     });
 
     this.jobsTable = new dynamodb.Table(this, 'JobsTable', {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy,
+      ...durable,
       timeToLiveAttribute: 'expires_at',
     });
     this.jobsTable.addGlobalSecondaryIndex({

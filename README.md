@@ -298,6 +298,37 @@ aws secretsmanager put-secret-value \
 Until then the endpoint returns the entities and the query it would have run, flagged
 `configured: false`, instead of failing.
 
+## Durability
+
+`retainData` defaults to on, so the tables, the media bucket and the KMS token key survive
+`cdk destroy`, every table that holds anything has point-in-time recovery, and the media
+bucket keeps versions. Two lifecycle rules sweep what versioning leaves behind: old versions
+after 30 days, and the delete markers a versioned delete leaves in place of the object.
+
+A scratch stack asks for the opposite with `-c retainData=false`, which takes its data with
+it rather than leaving resources behind to bill for. The flip side of the default: after a
+`cdk destroy` the retained resources are still there, and still cost, until you remove them.
+
+## Alarms
+
+Seven, on one SNS topic. No email address is baked into the repo, so the topic starts with
+no subscriber — either deploy with `-c alarmEmail=you@example.com`, or subscribe afterwards:
+
+```bash
+aws sns subscribe --topic-arn "$(aws cloudformation describe-stacks --stack-name ReelLens \
+  --query "Stacks[0].Outputs[?OutputKey=='AlarmTopicArn'].OutputValue" --output text)" \
+  --protocol email --notification-endpoint you@example.com
+```
+
+They cover a failed or timed-out ingest, a throw in any pipeline handler, Bedrock rejecting
+calls, an hour of unusual token volume, the vector index failing to scale back to zero, and
+monthly estimated charges past `-c monthlyBudget` (default $20).
+
+Two caveats worth knowing. `EstimatedCharges` reads 0 while account credits cover the bill,
+so the spend alarm is dormant until those run out — the token alarm is the one that works
+today. And the pipeline smoke test deliberately fails a reel, so running it sets off the
+failure alarm.
+
 ## Checks
 
 ```bash

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import {
   classifyPost,
   explainDownloadFailure,
@@ -19,7 +20,7 @@ import { SLIDE_INTERVAL_MS } from '../lambda/shared/media';
  * Instagram's, and an invented fixture would only assert what we assumed.
  */
 const carouselInfo = JSON.parse(
-  readFileSync(new URL('./fixtures/carousel-info.json', import.meta.url), 'utf8'),
+  readFileSync(path.join(__dirname, 'fixtures', 'carousel-info.json'), 'utf8'),
 ) as YtDlpInfo;
 
 const ZWSP = String.fromCharCode(0x200b);
