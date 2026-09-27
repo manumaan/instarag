@@ -329,7 +329,8 @@ nothing more: 0.46 MB for the same sixteen tiles, 68% less. Extraction and the s
 download write it inline, and `thumbnail.handler` backfills anything older without
 re-running extraction, which would rewrite frame rows and discard the analysis on them.
 
-An uploaded carousel still shows its cover: nothing with ffmpeg runs on that path.
+An uploaded carousel never touches the extractor, so completing that upload asks the
+thumbnailer directly; it fails quietly, because an upload should not fail over a grid image.
 
 ## Models
 

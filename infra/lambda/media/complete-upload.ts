@@ -1,5 +1,6 @@
 import { HeadObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { BatchWriteCommand, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb, TABLES } from '../shared/ddb';
 import { badRequest, handler, notFound, pathParam } from '../shared/http';
@@ -9,6 +10,9 @@ const s3 = new S3Client({});
 const sfn = new SFNClient({});
 const BUCKET = process.env.MEDIA_BUCKET!;
 const STATE_MACHINE_ARN = process.env.STATE_MACHINE_ARN;
+const THUMBNAIL_FUNCTION_ARN = process.env.THUMBNAIL_FUNCTION_ARN;
+
+const lambda = new LambdaClient({});
 const FRAMES_TABLE = process.env.FRAMES_TABLE!;
 /** How long a job row survives before the jobs table's TTL removes it. */
 const JOB_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -125,6 +129,29 @@ async function completeCarousel(id: string, media: MediaRecord) {
       ReturnValues: 'ALL_NEW',
     }),
   );
+
+  /*
+   * The grid's thumbnail, from the one handler in this stack that has ffmpeg.
+   * Uploaded slides never touch the extractor — this path only lists S3 and
+   * writes rows — so without this the grid falls back to a full-size slide,
+   * which for a carousel is the 1568px image the vision pass reads text off.
+   *
+   * Fire and forget, and failures are swallowed: an upload must not fail over
+   * a grid image, and the fallback still renders.
+   */
+  if (THUMBNAIL_FUNCTION_ARN) {
+    try {
+      await lambda.send(
+        new InvokeCommand({
+          FunctionName: THUMBNAIL_FUNCTION_ARN,
+          InvocationType: 'Event',
+          Payload: Buffer.from(JSON.stringify({ mediaId: id })),
+        }),
+      );
+    } catch (err) {
+      console.warn('could not queue the thumbnail; the grid will use the cover', { id, err });
+    }
+  }
 
   if (STATE_MACHINE_ARN) {
     await sfn.send(

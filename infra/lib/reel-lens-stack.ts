@@ -132,6 +132,14 @@ export class ReelLensStack extends Stack {
       fn.addEnvironment('STATE_MACHINE_ARN', pipeline.stateMachine.stateMachineArn);
     }
 
+    // An uploaded carousel is the one ingest path with no ffmpeg behind it, so
+    // it asks the thumbnailer directly rather than getting one on the way past.
+    pipeline.thumbnailFunction.grantInvoke(api.completeUploadFunction);
+    api.completeUploadFunction.addEnvironment(
+      'THUMBNAIL_FUNCTION_ARN',
+      pipeline.thumbnailFunction.functionArn,
+    );
+
     new CfnOutput(this, 'ApiUrl', { value: api.httpApi.apiEndpoint });
     new CfnOutput(this, 'UserPoolId', { value: auth.userPool.userPoolId });
     new CfnOutput(this, 'UserPoolClientId', { value: auth.userPoolClient.userPoolClientId });

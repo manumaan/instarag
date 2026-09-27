@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import CiteIcon from '@/components/CiteIcon';
 import {
   ask,
   getThread,
   looksLikePlan,
+  isSlideshow,
   sourceLabel,
   startPlan,
   warmSearch,
@@ -49,7 +51,7 @@ export default function AskPanel({
 }: {
   mediaId?: string;
   onCite?: (citation: Citation) => void;
-  renderCitation?: (citation: Citation) => React.ReactNode;
+  renderCitation?: (citation: Citation, label: string) => React.ReactNode;
   /** A carousel cites slides, not seconds. */
   label?: (citation: Citation) => string;
 }) {
@@ -58,6 +60,7 @@ export default function AskPanel({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [threadId, setThreadId] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<number | undefined>();
 
   const live = useRef(true);
   useEffect(() => () => void (live.current = false), []);
@@ -138,12 +141,64 @@ export default function AskPanel({
     }
   }
 
+  const itemCount = (plan: Plan) => plan.sections.reduce((n, section) => n + section.items.length, 0);
+
+  /**
+   * The creator's own name, before the tail of self-description Instagram
+   * handles carry — "Katherine 🇹🇷 Istanbul trip planner · travel tips ·
+   * itineraries". They separate it with a pipe, a middot or a bullet depending
+   * on the account, so all three are cut, and what is left is capped: these sit
+   * in a pill next to a timestamp, not on a line of their own.
+   */
+  const creator = (source: Source) => {
+    const name = (source.uploader ?? '').split(/[|·•]/)[0].trim();
+    if (!name) return source.media_id.slice(0, 8);
+    return name.length > 22 ? `${name.slice(0, 21)}…` : name;
+  };
+
+  /** One chip per creator, not per clip: two clips by the same person read as a repeat. */
+  const distinctCreators = (sources: Source[] | undefined) => {
+    const seen = new Map<string, Source>();
+    for (const source of sources ?? []) if (!seen.has(creator(source))) seen.set(creator(source), source);
+    return [...seen.entries()];
+  };
+
+  /**
+   * A travel plan is something you paste somewhere else, so it copies as plain
+   * text. Clipboard writes are refused in some app views, so the failure is
+   * silent rather than a broken-looking button.
+   */
+  async function copyPlan(plan: Plan, index: number) {
+    const lines = [plan.title, '', plan.overview];
+    for (const section of plan.sections) {
+      lines.push('', section.heading.toUpperCase());
+      for (const item of section.items) lines.push(`- ${item.text}`);
+    }
+    if (plan.gaps.length > 0) {
+      lines.push('', "NOT COVERED BY YOUR CLIPS");
+      for (const gap of plan.gaps) lines.push(`- ${gap}`);
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setCopied(index);
+      setTimeout(() => setCopied(undefined), 2000);
+    } catch {
+      // Nothing to do: the text is on screen and selectable.
+    }
+  }
+
+  /**
+   * A citation is a mark, not a sentence. Thirty tips each naming their clip and
+   * timestamp in full buried the advice under its own provenance, so the label
+   * moved to the title and the button carries an icon.
+   */
   const citationChip = (citation: Citation, sources: Source[] | undefined, key: number) => {
-    if (renderCitation) return <span key={key}>{renderCitation(citation)}</span>;
     const source = sources?.find((s) => s.media_id === citation.media_id);
+    const text = label ? label(citation) : sourceLabel(source, citation.ts_ms);
+    if (renderCitation) return <span key={key}>{renderCitation(citation, text)}</span>;
     return (
-      <button key={key} className="evidence" onClick={() => onCite?.(citation)}>
-        {label ? label(citation) : sourceLabel(source, citation.ts_ms)}
+      <button key={key} className="cite-icon" title={text} aria-label={text} onClick={() => onCite?.(citation)}>
+        <CiteIcon slide={isSlideshow({ type: source?.type ?? 'reel', slide_count: source?.slide_count })} />
       </button>
     );
   };
@@ -170,7 +225,7 @@ export default function AskPanel({
             {turn.error && <p className="error small">{turn.error}</p>}
 
             {turn.building && (
-              <p className="muted small">
+              <p className="plan-building">
                 Reading across your library and writing it up. This takes about a minute.
               </p>
             )}
@@ -193,23 +248,50 @@ export default function AskPanel({
 
             {turn.plan && (
               <article className="plan">
-                <h3>{turn.plan.title}</h3>
-                <p className="muted">{turn.plan.overview}</p>
+                <header className="plan-head">
+                  <h3>{turn.plan.title}</h3>
+                  <p className="plan-lede">{turn.plan.overview}</p>
+
+                  {turn.plan.sections.length > 0 && (
+                    <div className="plan-meta">
+                      <span className="count">
+                        {turn.plan.sections.length} sections · {itemCount(turn.plan)} tips
+                      </span>
+                      {turn.sources && turn.sources.length > 0 && (
+                        <span className="plan-from">
+                          <span className="label">from</span>
+                          {distinctCreators(turn.sources).map(([name]) => (
+                            <span key={name} className="cite">
+                              {name}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                      <span className="spacer" />
+                      <button className="btn small" onClick={() => copyPlan(turn.plan!, i)}>
+                        {copied === i ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                  )}
+                </header>
 
                 {turn.plan.sections.map((section, s) => (
-                  <div key={s} className="plan-section">
-                    <h4>{section.heading}</h4>
-                    <ul>
+                  <section key={s} className="plan-section">
+                    <h4>
+                      {section.heading}
+                      <span className="n">{section.items.length}</span>
+                    </h4>
+                    <ul className="plan-items">
                       {section.items.map((item, k) => (
                         <li key={k}>
-                          <span>{item.text}</span>
-                          <span className="citations">
+                          <p>{item.text}</p>
+                          <span className="cites">
                             {item.citations.map((citation, j) => citationChip(citation, turn.sources, j))}
                           </span>
                         </li>
                       ))}
                     </ul>
-                  </div>
+                  </section>
                 ))}
 
                 {turn.unsupported && (
@@ -229,10 +311,13 @@ export default function AskPanel({
                   </div>
                 )}
 
-                {turn.plan.moments !== undefined && (
-                  <p className="muted small">
-                    Built from {turn.plan.moments} moments across your library.
-                    {turn.plan.itemsDropped ? ` ${turn.plan.itemsDropped} unsupported items were dropped.` : ''}
+                {turn.plan.moments !== undefined && turn.plan.sections.length > 0 && (
+                  <p className="plan-foot">
+                    Built from {turn.plan.moments} moments across your library
+                    {turn.plan.itemsDropped
+                      ? `, after dropping ${turn.plan.itemsDropped} the clips did not support`
+                      : ''}
+                    .
                   </p>
                 )}
               </article>
