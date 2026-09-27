@@ -313,6 +313,9 @@ export class Api extends Construct {
       [apigw.HttpMethod.DELETE, '/media/{id}', deleteMedia],
       [apigw.HttpMethod.POST, '/media/{id}/retry', retryMedia],
       [apigw.HttpMethod.POST, '/ask', ask],
+      // Focusing the question box hits this, so the collection is awake by the
+      // time there is a question to run.
+      [apigw.HttpMethod.POST, '/ask/warm', ask],
       [apigw.HttpMethod.GET, '/threads', listThreads],
       [apigw.HttpMethod.GET, '/threads/{id}', getThread],
       [apigw.HttpMethod.POST, '/lens/uploads', lensUpload],

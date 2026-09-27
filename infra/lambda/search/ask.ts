@@ -6,7 +6,7 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { ddb } from '../shared/ddb';
 import { badRequest, handler, parseJsonBody } from '../shared/http';
-import { retrieve, type Hit } from './retrieve';
+import { retrieve, warmIndex, type Hit } from './retrieve';
 import { sourcesFor } from './sources';
 
 const THREADS_TABLE = process.env.THREADS_TABLE!;
@@ -47,6 +47,10 @@ interface AskBody {
 
 /** POST /ask — RAG over the frame index, answering only from retrieved frames. */
 export const main = handler(async (event) => {
+  // Same function on purpose: this warms the container that will serve the
+  // question as well as the index it will search.
+  if (event.routeKey?.endsWith('/ask/warm')) return warmIndex();
+
   const body = parseJsonBody<AskBody>(event);
   const question = body.question?.trim();
   if (!question) throw badRequest('question is required');

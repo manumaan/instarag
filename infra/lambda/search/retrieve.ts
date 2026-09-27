@@ -104,6 +104,33 @@ async function rankingsFor(query: string, filter: unknown[], size: number): Prom
   return [hitsOf(knn as never), hitsOf(lexical as never)];
 }
 
+/**
+ * Wakes the collection without asking it anything.
+ *
+ * A NEXTGEN collection scales to zero after ten idle minutes, and the first
+ * search afterwards waits for OCUs to come up: measured at 41s against 6s warm,
+ * which is past the 30-second ceiling API Gateway puts on an integration. Fired
+ * when someone focuses the question box, that wait is spent while they type
+ * rather than after they press the button.
+ */
+export async function warmIndex(): Promise<{ warmed: boolean; ms: number }> {
+  const started = Date.now();
+  try {
+    // size 0 and match_all: the cheapest thing that still makes the service
+    // bring search capacity up. Nothing is read, so nothing needs embedding.
+    await openSearchClient().search({
+      index: INDEX_NAME,
+      body: { size: 0, query: { match_all: {} } } as never,
+    });
+    return { warmed: true, ms: Date.now() - started };
+  } catch (err) {
+    // Best effort by definition — the question that follows will report a real
+    // failure. An index that does not exist yet is not one.
+    console.warn('index warm-up failed', err);
+    return { warmed: false, ms: Date.now() - started };
+  }
+}
+
 /** kNN and BM25 in parallel, then fused. `mediaId` scopes to one reel. */
 export async function retrieve(question: string, options: { mediaId?: string; limit?: number }): Promise<Hit[]> {
   const limit = options.limit ?? 12;

@@ -7,6 +7,7 @@ import {
   looksLikePlan,
   sourceLabel,
   startPlan,
+  warmSearch,
   type AskAnswer,
   type Citation,
   type Plan,
@@ -60,6 +61,24 @@ export default function AskPanel({
 
   const live = useRef(true);
   useEffect(() => () => void (live.current = false), []);
+
+  /*
+   * The index sleeps after ten idle minutes and takes tens of seconds to come
+   * back — longer than the API waits. Focusing the box starts that wake-up, so
+   * it happens while the question is being typed instead of after it is sent.
+   * Throttled, because a wake lasts about ten minutes and re-poking a live
+   * collection only keeps meters running.
+   */
+  const warmedAt = useRef(0);
+  const warm = () => {
+    const now = Date.now();
+    if (now - warmedAt.current < 5 * 60 * 1000) return;
+    warmedAt.current = now;
+    void warmSearch().catch(() => {
+      // Best effort. Let the question report anything genuinely wrong.
+      warmedAt.current = 0;
+    });
+  };
 
   const detected: Mode = looksLikePlan(question) ? 'plan' : 'answer';
   const mode: Mode = forcedMode ?? detected;
@@ -231,6 +250,7 @@ export default function AskPanel({
           type="text"
           placeholder={mediaId ? 'Ask about this reel…' : 'Ask, or ask for a plan…'}
           value={question}
+          onFocus={warm}
           onChange={(e) => setQuestion(e.target.value)}
           disabled={busy}
         />

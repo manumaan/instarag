@@ -231,6 +231,22 @@ export const ask = (question: string, options: { mediaId?: string; threadId?: st
     body: JSON.stringify({ question, mediaId: options.mediaId, threadId: options.threadId }),
   });
 
+/**
+ * Wakes the search index ahead of a question.
+ *
+ * The collection scales to zero after ten idle minutes and the first search
+ * afterwards takes tens of seconds — longer than the API will wait. Firing this
+ * when the question box is focused spends that wait while the question is being
+ * typed. Best effort: failures are ignored, because the question itself will
+ * report anything that is actually wrong.
+ */
+export const warmSearch = () =>
+  call<{ warmed: boolean; ms: number }>('/ask/warm', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+
 /** Start a plan built from the whole library. Returns as soon as it is queued. */
 export const startPlan = (request: string, options: { mediaId?: string; threadId?: string } = {}) =>
   call<PlanStarted>('/ask', {

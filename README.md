@@ -318,6 +318,20 @@ Plans are built in the background because they take about a minute, and an API G
 integration is cut off at thirty seconds. The screen shows the request as building and
 fills it in when the worker is done.
 
+## Waking the index
+
+The vector index scales to zero when idle, which is what keeps the standing cost near
+nothing — and it means the first search after a quiet spell waits tens of seconds for
+capacity to come back. Measured: 41s cold, 6s warm, against an API that gives up at 30.
+
+So focusing the question box sends a wake-up first. By the time a question has been typed
+the index is up, and the wait has been spent on something nobody was watching. It is
+throttled to once every five minutes, and if it fails nothing is lost — the question itself
+reports anything genuinely wrong.
+
+Keeping the index permanently warm would also work and is the wrong trade: it would hold
+capacity up around the clock for roughly $170/month, against about $2 idle today.
+
 ## Durability
 
 `retainData` defaults to on, so the tables, the media bucket and the KMS token key survive
