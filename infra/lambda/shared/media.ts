@@ -25,6 +25,8 @@ export interface MediaRecord {
   s3_key?: string;
   /** Cover frame, for the library grid's thumbnail. */
   cover_s3_key?: string;
+  /** The library grid's image: the cover, downscaled to tile size. */
+  thumb_s3_key?: string;
   content_type?: string;
   bytes?: number;
   original_filename?: string;

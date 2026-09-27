@@ -8,6 +8,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { BatchWriteCommand, DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { convertSlide, readFrame, run } from './ffmpeg';
 import { mapWithConcurrency } from './concurrency';
+import { writeThumbnail } from './thumbnail';
 import {
   classifyPost,
   explainDownloadFailure,
@@ -262,6 +263,10 @@ async function storeSlides(
       ConditionExpression: 'attribute_exists(id)',
     }),
   );
+
+  // A slide is encoded at 1568px so the vision pass can read it; the grid needs
+  // nothing like that.
+  await writeThumbnail(mediaId, stored[0].key);
 
   console.log('stored slides', {
     mediaId,

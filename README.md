@@ -318,6 +318,19 @@ Plans are built in the background because they take about a minute, and an API G
 integration is cut off at thirty seconds. The screen shows the request as building and
 fills it in when the worker is done.
 
+## Library thumbnails
+
+The grid draws ~250px tiles, and it used to presign the cover frame itself — 720px for a
+reel, 1568px for a carousel slide, because that slide is encoded for the vision pass to read
+body text off it. Sixteen tiles came to 1.42 MB.
+
+Each item now gets `thumb.jpg` at 520px on the long edge, which covers a 2x screen and
+nothing more: 0.46 MB for the same sixteen tiles, 68% less. Extraction and the slide
+download write it inline, and `thumbnail.handler` backfills anything older without
+re-running extraction, which would rewrite frame rows and discard the analysis on them.
+
+An uploaded carousel still shows its cover: nothing with ffmpeg runs on that path.
+
 ## Models
 
 Generation runs on the Anthropic API — Opus 5 for the keyframe vision pass, Sonnet 5 for

@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { BatchWriteCommand, DynamoDBDocumentClient, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { writeThumbnail } from './thumbnail';
 import { dedupeByPhash, phash } from './phash';
 import { mapWithConcurrency } from './concurrency';
 import {
@@ -212,13 +213,16 @@ async function storeFrames(mediaId: string, frames: Candidate[]) {
  */
 async function recordCover(mediaId: string, cover: Candidate | undefined) {
   if (!cover) return;
+  const key = `media/${mediaId}/frames/${String(cover.tsMs).padStart(8, '0')}.jpg`;
   await ddb.send(
     new UpdateCommand({
       TableName: MEDIA_TABLE,
       Key: { id: mediaId },
       UpdateExpression: 'SET cover_s3_key = :key',
-      ExpressionAttributeValues: { ':key': `media/${mediaId}/frames/${String(cover.tsMs).padStart(8, '0')}.jpg` },
+      ExpressionAttributeValues: { ':key': key },
       ConditionExpression: 'attribute_exists(id)',
     }),
   );
+  // The grid draws a ~250px tile; the cover is 720px. Give it its own image.
+  await writeThumbnail(mediaId, key);
 }

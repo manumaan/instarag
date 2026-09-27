@@ -45,6 +45,7 @@ export interface PipelineProps {
 export class Pipeline extends Construct {
   readonly extractFunction: lambda.DockerImageFunction;
   readonly downloadFunction: lambda.DockerImageFunction;
+  readonly thumbnailFunction: lambda.DockerImageFunction;
   readonly analyseFunction: NodejsFunction;
   readonly storeTranscriptFunction: NodejsFunction;
   readonly indexFunction: NodejsFunction;
@@ -131,6 +132,39 @@ export class Pipeline extends Construct {
       new iam.PolicyStatement({
         actions: ['dynamodb:BatchWriteItem'],
         resources: [storage.framesTable.tableArn],
+      }),
+    );
+
+    /*
+     * Third handler from the same image. Extraction and download write the
+     * grid's thumbnail inline, so this exists for items ingested before
+     * thumbnails did: re-running extraction on them would rewrite their frame
+     * rows and discard the analysis sitting on those rows.
+     */
+    this.thumbnailFunction = new lambda.DockerImageFunction(this, 'Thumbnail', {
+      code: lambda.DockerImageCode.fromImageAsset(image, {
+        platform: Platform.LINUX_ARM64,
+        cmd: ['thumbnail.handler'],
+      }),
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 1024,
+      timeout: Duration.minutes(2),
+      environment: {
+        MEDIA_BUCKET: storage.mediaBucket.bucketName,
+        MEDIA_TABLE: storage.mediaTable.tableName,
+      },
+      logGroup: new logs.LogGroup(this, 'ThumbnailLogs', { retention: logs.RetentionDays.TWO_WEEKS }),
+    });
+    this.thumbnailFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:GetObject', 's3:PutObject'],
+        resources: [storage.mediaBucket.arnForObjects('media/*')],
+      }),
+    );
+    this.thumbnailFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+        resources: [storage.mediaTable.tableArn],
       }),
     );
 

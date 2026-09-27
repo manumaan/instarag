@@ -154,17 +154,24 @@ test('extraction and download are containers with room for a 500 MB reel', () =>
   const functions = Object.values(template.findResources('AWS::Lambda::Function')).filter(
     (fn) => fn.Properties.PackageType === 'Image',
   );
-  assert.equal(functions.length, 2, 'extraction and download run from container images');
-  for (const fn of functions) {
+  assert.equal(functions.length, 3, 'extraction, download and the thumbnailer');
+
+  const cmd = (fn: Record<string, any>) => fn.Properties.ImageConfig?.Command?.[0] ?? 'index.handler';
+  // The two that move whole reels around. The thumbnailer is deliberately not
+  // one of them: it copies a single small image and needs neither the storage
+  // nor the five minutes.
+  const heavy = functions.filter((fn) => cmd(fn) !== 'thumbnail.handler');
+  assert.equal(heavy.length, 2);
+  for (const fn of heavy) {
     assert.deepEqual(fn.Properties.Architectures, ['arm64']);
     assert.equal(fn.Properties.EphemeralStorage.Size, 2048);
     assert.ok(fn.Properties.Timeout >= 300, `timeout ${fn.Properties.Timeout}s is too short`);
   }
-  // Both come from the same image asset; only the CMD differs.
+
+  // All three come from the same image asset; only the CMD differs.
   const images = new Set(functions.map((fn) => JSON.stringify(fn.Properties.Code.ImageUri)));
-  assert.equal(images.size, 1, 'one image asset, two handlers');
-  const overrides = functions.filter((fn) => fn.Properties.ImageConfig?.Command);
-  assert.deepEqual(overrides[0].Properties.ImageConfig.Command, ['download.handler']);
+  assert.equal(images.size, 1, 'one image asset, three handlers');
+  assert.deepEqual(functions.map(cmd).sort(), ['download.handler', 'index.handler', 'thumbnail.handler']);
 });
 
 test('a pasted permalink is downloaded before extraction, an upload is not', () => {
@@ -753,4 +760,19 @@ test('no email address is baked into the template', () => {
     !emailShaped.test(JSON.stringify(template.toJSON())),
     'an address reached the template',
   );
+});
+
+test('the library grid is served a thumbnail, not the analysis frame', () => {
+  const template = synth();
+  const images = Object.values(template.findResources('AWS::Lambda::Function')).filter(
+    (fn) => fn.Properties.PackageType === 'Image',
+  );
+  // Extraction, download, and the thumbnail backfill, all from one image.
+  assert.equal(images.length, 3);
+
+  const thumbnailer = images.find((fn) => JSON.stringify(fn.Properties.ImageConfig ?? {}).includes('thumbnail'));
+  assert.ok(thumbnailer, 'no handler can write a thumbnail');
+  // It only moves one small image between S3 and DynamoDB; it needs neither the
+  // memory extraction runs at nor its five minutes.
+  assert.ok(thumbnailer.Properties.Timeout <= 120);
 });

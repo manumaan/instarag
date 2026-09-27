@@ -126,6 +126,30 @@ export async function convertStill(input: string, outFile: string): Promise<Extr
   return { tsMs: 0, file: outFile };
 }
 
+/**
+ * The library grid's image: 520px on the long edge.
+ *
+ * The grid draws tiles at roughly 200-260px, so 520 covers a 2x screen and
+ * nothing more. It exists because the grid was presigning the cover *frame* —
+ * 720px for a reel and 1568px for a carousel slide, the latter sized for the
+ * vision pass to read body text off it. Fourteen tiles came to 1.22 MB.
+ */
+const THUMB_LONGEST_EDGE = 520;
+const THUMB_SCALE_FILTER =
+  `scale=w='if(gt(iw,ih),min(iw,${THUMB_LONGEST_EDGE}),-2)':h='if(gt(iw,ih),-2,min(ih,${THUMB_LONGEST_EDGE}))'`;
+
+/** Downscales a cover frame for the library grid. Never upscales a small one. */
+export async function convertThumbnail(input: string, outFile: string): Promise<void> {
+  await run(FFMPEG, [
+    '-nostdin', '-y',
+    '-i', input,
+    '-vf', THUMB_SCALE_FILTER,
+    '-q:v', JPEG_QSCALE,
+    '-pix_fmt', JPEG_PIX_FMT,
+    outFile,
+  ]);
+}
+
 /** Re-encodes a carousel slide fetched from Instagram's CDN into a frame JPEG. */
 export async function convertSlide(input: string, outFile: string): Promise<void> {
   await run(FFMPEG, [

@@ -46,7 +46,13 @@ export const main = handler(async (event) => {
  * to the cover's deterministic key, which is always the frame at 0ms.
  */
 async function withThumbnail(media: MediaRecord): Promise<MediaRecord & { thumbnailUrl?: string }> {
-  const key = media.cover_s3_key ?? (media.s3_key ? `media/${media.id}/frames/00000000.jpg` : undefined);
+  // Thumbnail first, then the cover frame, then the deterministic cover key.
+  // Each fallback is a generation of this record: items ingested before
+  // thumbnails existed, and before cover_s3_key existed, both still render.
+  const key =
+    media.thumb_s3_key ??
+    media.cover_s3_key ??
+    (media.s3_key ? `media/${media.id}/frames/00000000.jpg` : undefined);
   if (!key) return media;
   return {
     ...media,

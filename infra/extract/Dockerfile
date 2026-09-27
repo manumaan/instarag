@@ -1,5 +1,5 @@
 # Keyframe extraction + reel download Lambda.
-# One image, two handlers: the Lambda functions differ only by CMD.
+# One image, three handlers: the Lambda functions differ only by CMD.
 
 # Pinned by digest so a rebuild can never pick up a different ffmpeg.
 FROM mwader/static-ffmpeg:7.1@sha256:a8090df5f5608daef387e1b2e93b98aaacb4d92153ad904e7d715c725724fca4 AS ffmpeg
@@ -10,7 +10,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY src ./src
 # Two self-contained CJS bundles, so the runtime image carries no node_modules.
-RUN node_modules/.bin/esbuild src/index.ts src/download.ts \
+RUN node_modules/.bin/esbuild src/index.ts src/download.ts src/thumbnail.ts \
       --bundle --platform=node --target=node22 --format=cjs \
       --outdir=dist
 
