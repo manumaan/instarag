@@ -111,14 +111,14 @@ export default function LibraryPage() {
 
   return (
     <main className="page">
-      <p className="row">
-        <Link href="/ask" className="back">
-          Ask your library →
+      <div className="row actions">
+        <Link href="/ask" className="btn primary">
+          Ask your library
         </Link>
-        <button className="ghost small" onClick={() => setLensOpen(true)}>
+        <button className="btn" onClick={() => setLensOpen(true)}>
           Search by screenshot
         </button>
-      </p>
+      </div>
       {lensOpen && <LensSheet onClose={() => setLensOpen(false)} />}
       <DropZone onAdded={(media) => setItems((prev) => [media, ...prev.filter((m) => m.id !== media.id)])} />
 
