@@ -23,6 +23,8 @@ export interface ApiProps {
   readonly connected: Connected;
   /** Model that answers questions; same one that analyses frames. */
   readonly analysisModel: string;
+  /** Cheap model for the query-expansion pass in front of a plan. */
+  readonly expansionModel: string;
   readonly embeddingModel: string;
 }
 
@@ -181,6 +183,16 @@ export class Api extends Construct {
       SEARCH_INDEX: 'frames',
       ANALYSIS_MODEL_ID: props.analysisModel,
     };
+    /** The three models a search handler may invoke: vision, embeddings, expansion. */
+    const bedrockModelArns = (p: { analysisModel: string; embeddingModel: string; expansionModel: string }) => [
+      `arn:aws:bedrock:${Stack.of(this).region}:${Stack.of(this).account}:inference-profile/${p.analysisModel}`,
+      `arn:aws:bedrock:*::foundation-model/${p.analysisModel.replace(/^(us|global)\./, '')}`,
+      `arn:aws:bedrock:*::foundation-model/${p.embeddingModel}`,
+      // Haiku turns one request into several searches — the cheap pass.
+      `arn:aws:bedrock:${Stack.of(this).region}:${Stack.of(this).account}:inference-profile/${p.expansionModel}`,
+      `arn:aws:bedrock:*::foundation-model/${p.expansionModel.replace(/^(us|global)\./, '')}`,
+    ];
+
     const makeSearchFn = (name: string, file: string, exportName = 'main') =>
       new NodejsFunction(this, name, {
         entry: path.join(SEARCH_LAMBDA_DIR, file),
@@ -194,14 +206,30 @@ export class Api extends Construct {
         bundling: { minify: true, sourceMap: true, format: OutputFormat.CJS, target: 'node22', externalModules: [] },
       });
 
+    /*
+     * Building a plan out of the whole library takes about a minute — measured:
+     * expansion 1.5s, retrieval 1.3s, then a synthesis of several thousand
+     * output tokens. An HTTP API integration is cut off at 30 seconds and that
+     * ceiling cannot be raised, so the work happens here, off the request, and
+     * the answer lands on the thread's assistant message.
+     */
+    const planWorker = makeSearchFn('PlanWorker', 'plan-worker.ts', 'handler');
+    planWorker.addEnvironment('EXPANSION_MODEL_ID', props.expansionModel);
+    (planWorker.node.defaultChild as lambda.CfnFunction).timeout = 300;
+    allow(planWorker, ['dynamodb:UpdateItem'], [storage.messagesTable.tableArn]);
+    allow(planWorker, ['dynamodb:BatchGetItem'], [storage.mediaTable.tableArn]);
+    allow(planWorker, ['bedrock:InvokeModel'], bedrockModelArns(props));
+    props.search.grantRead(planWorker);
+
     const ask = makeSearchFn('Ask', 'ask.ts');
+    ask.addEnvironment('EXPANSION_MODEL_ID', props.expansionModel);
+    ask.addEnvironment('PLAN_WORKER_ARN', planWorker.functionArn);
+    planWorker.grantInvoke(ask);
     allow(ask, ['dynamodb:PutItem'], [storage.threadsTable.tableArn]);
     allow(ask, ['dynamodb:PutItem', 'dynamodb:Query'], [storage.messagesTable.tableArn]);
-    allow(ask, ['bedrock:InvokeModel'], [
-      `arn:aws:bedrock:${Stack.of(this).region}:${Stack.of(this).account}:inference-profile/${props.analysisModel}`,
-      `arn:aws:bedrock:*::foundation-model/${props.analysisModel.replace(/^(us|global)\./, '')}`,
-      `arn:aws:bedrock:*::foundation-model/${props.embeddingModel}`,
-    ]);
+    // A plan cites a dozen clips; the ids have to become names the reader knows.
+    allow(ask, ['dynamodb:BatchGetItem'], [storage.mediaTable.tableArn]);
+    allow(ask, ['bedrock:InvokeModel'], bedrockModelArns(props));
     props.search.grantRead(ask);
 
     // Lens: find similar. Its own presigned-upload route, because a query

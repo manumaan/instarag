@@ -31,6 +31,14 @@ const retentionDays = retentionDaysRaw ? Number(retentionDaysRaw) : undefined;
  */
 const analysisModel = app.node.tryGetContext('analysisModel') ?? 'us.anthropic.claude-sonnet-4-6';
 
+/**
+ * The cheap pass in front of a plan: one request becomes several searches.
+ * Haiku 4.5, per the architecture table's split between vision/Q&A and
+ * classification. Verified invokable on this account.
+ */
+const expansionModel =
+  app.node.tryGetContext('expansionModel') ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
+
 /** Keyframe cap. The main cost lever: every frame is an image in the reel's one call. */
 const maxFrames = Number(app.node.tryGetContext('maxFrames') ?? 20);
 
@@ -73,6 +81,7 @@ new ReelLensStack(app, 'ReelLens', {
   retainData,
   retentionDays,
   analysisModel,
+  expansionModel,
   maxFrames,
   embeddingModel,
   maxOcu,

@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { ddb } from '../shared/ddb';
 import { badRequest, handler, parseJsonBody } from '../shared/http';
 import { retrieve, type Hit } from './retrieve';
+import { sourcesFor } from './sources';
 
 const THREADS_TABLE = process.env.THREADS_TABLE!;
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE!;
+const PLAN_WORKER_ARN = process.env.PLAN_WORKER_ARN!;
+
+const lambda = new LambdaClient({});
 const MODEL_ID = process.env.ANALYSIS_MODEL_ID!;
 
 const bedrock = new AnthropicBedrock({ awsRegion: process.env.AWS_REGION });
@@ -32,6 +37,12 @@ interface AskBody {
   question?: string;
   mediaId?: string;
   threadId?: string;
+  /**
+   * 'answer' pins one fact and cites it. 'plan' builds something out of the
+   * whole library — "a travel plan for Istanbul with all the tips" — which
+   * needs far more of the index and a different shape of reply.
+   */
+  mode?: 'answer' | 'plan';
 }
 
 /** POST /ask — RAG over the frame index, answering only from retrieved frames. */
@@ -40,6 +51,8 @@ export const main = handler(async (event) => {
   const question = body.question?.trim();
   if (!question) throw badRequest('question is required');
   if (question.length > 1000) throw badRequest('question is too long');
+
+  if (body.mode === 'plan') return planAnswer(question, body);
 
   const hits = await retrieve(question, { mediaId: body.mediaId });
 
@@ -91,9 +104,11 @@ export const main = handler(async (event) => {
 
   return {
     threadId,
+    mode: 'answer' as const,
     answered: parsed.answered && citations.length > 0,
     answer: parsed.answer,
     citations,
+    sources: await sourcesFor([...new Set(citations.map((c) => c.media_id))]),
     retrieved: hits.map((hit) => ({ media_id: hit.mediaId, ts_ms: hit.tsMs })),
     inputTokens: response.usage.input_tokens,
     outputTokens: response.usage.output_tokens,
@@ -125,29 +140,7 @@ async function persist(
   citations: Array<{ media_id: string; ts_ms: number }>,
 ) {
   const now = new Date().toISOString();
-  const existing = await ddb.send(
-    new QueryCommand({
-      TableName: MESSAGES_TABLE,
-      KeyConditionExpression: 'thread_id = :t',
-      ExpressionAttributeValues: { ':t': threadId },
-      Limit: 1,
-    }),
-  );
-  if ((existing.Count ?? 0) === 0) {
-    await ddb.send(
-      new PutCommand({
-        TableName: THREADS_TABLE,
-        Item: {
-          id: threadId,
-          entity: 'thread',
-          scope: mediaId ? 'media' : 'library',
-          media_id: mediaId,
-          title: question.slice(0, 120),
-          created_at: now,
-        },
-      }),
-    );
-  }
+  await startThread(threadId, mediaId, question, now);
   await ddb.send(
     new PutCommand({
       TableName: MESSAGES_TABLE,
@@ -164,6 +157,93 @@ async function persist(
         role: 'assistant',
         content: answer,
         citations,
+      },
+    }),
+  );
+}
+
+/** Creates the thread row the first time a thread is written to. */
+async function startThread(threadId: string, mediaId: string | undefined, question: string, now: string) {
+  const existing = await ddb.send(
+    new QueryCommand({
+      TableName: MESSAGES_TABLE,
+      KeyConditionExpression: 'thread_id = :t',
+      ExpressionAttributeValues: { ':t': threadId },
+      Limit: 1,
+    }),
+  );
+  if ((existing.Count ?? 0) > 0) return;
+  await ddb.send(
+    new PutCommand({
+      TableName: THREADS_TABLE,
+      Item: {
+        id: threadId,
+        entity: 'thread',
+        scope: mediaId ? 'media' : 'library',
+        media_id: mediaId,
+        title: question.slice(0, 120),
+        created_at: now,
+      },
+    }),
+  );
+}
+
+/**
+ * The whole-library path: "create a travel plan for Istanbul with all the tips".
+ *
+ * It answers with a thread rather than a plan, because building one takes a
+ * minute or so and an HTTP API integration is cut off at thirty seconds. The
+ * assistant message is written as `working` and a worker fills it in; the UI
+ * polls GET /threads/{id} until its status changes.
+ */
+async function planAnswer(request: string, body: AskBody) {
+  const threadId = body.threadId ?? randomUUID();
+  const now = new Date().toISOString();
+  // Microsecond suffix keeps the answer after its question in sort order.
+  const assistantAt = `${now}#a`;
+
+  await startTurn(threadId, body.mediaId, request, now, assistantAt);
+
+  await lambda.send(
+    new InvokeCommand({
+      FunctionName: PLAN_WORKER_ARN,
+      // Fire and forget: the answer arrives on the message, not on this response.
+      InvocationType: 'Event',
+      Payload: Buffer.from(
+        JSON.stringify({ threadId, createdAt: assistantAt, request, mediaId: body.mediaId }),
+      ),
+    }),
+  );
+
+  return { threadId, mode: 'plan' as const, status: 'working' as const, messageAt: assistantAt };
+}
+
+/** Writes the question and a placeholder for the answer still being built. */
+async function startTurn(
+  threadId: string,
+  mediaId: string | undefined,
+  question: string,
+  now: string,
+  assistantAt: string,
+) {
+  await startThread(threadId, mediaId, question, now);
+  await ddb.send(
+    new PutCommand({
+      TableName: MESSAGES_TABLE,
+      Item: { thread_id: threadId, created_at: now, role: 'user', content: question, mode: 'plan' },
+    }),
+  );
+  await ddb.send(
+    new PutCommand({
+      TableName: MESSAGES_TABLE,
+      Item: {
+        thread_id: threadId,
+        created_at: assistantAt,
+        role: 'assistant',
+        mode: 'plan',
+        status: 'working',
+        content: '',
+        citations: [],
       },
     }),
   );

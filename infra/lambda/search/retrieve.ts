@@ -49,13 +49,13 @@ const toHit = (source: Record<string, unknown>): Hit => ({
 /** Kind is part of the key: a frame and a spoken line can share a timestamp. */
 export const hitKey = (hit: Hit) => `${hit.mediaId}:${hit.kind}:${hit.tsMs}`;
 
-/** kNN and BM25 in parallel, then fused. `mediaId` scopes to one reel. */
-export async function retrieve(question: string, options: { mediaId?: string; limit?: number }): Promise<Hit[]> {
-  const limit = options.limit ?? 12;
-  const client = openSearchClient();
-  const filter = options.mediaId ? [{ term: { media_id: options.mediaId } }] : [];
+const hitsOf = (response: { body: { hits: { hits: Array<{ _source?: unknown }> } } }) =>
+  response.body.hits.hits.map((hit) => toHit((hit._source ?? {}) as Record<string, unknown>));
 
-  const vector = await embed({ text: question });
+/** The two rankings one query produces: nearest-neighbour and lexical. */
+async function rankingsFor(query: string, filter: unknown[], size: number): Promise<Hit[][]> {
+  const client = openSearchClient();
+  const vector = await embed({ text: query });
 
   // Before anything has been indexed the index does not exist yet; that is an
   // empty result, not an error.
@@ -71,23 +71,23 @@ export async function retrieve(question: string, options: { mediaId?: string; li
 
   const [knn, lexical] = await Promise.all([
     search({
-      size: limit,
+      size,
       query: {
         bool: {
-          must: [{ knn: { embedding: { vector, k: limit } } }],
+          must: [{ knn: { embedding: { vector, k: size } } }],
           ...(filter.length ? { filter } : {}),
         },
       },
       _source: { excludes: ['embedding'] },
     }),
     search({
-      size: limit,
+      size,
       query: {
         bool: {
           must: [
             {
               multi_match: {
-                query: question,
+                query,
                 // ocr_text carries signage and street names, so it leads.
                 // ocr_text and speech both carry exact wording worth matching.
                 fields: ['ocr_text^3', 'speech^3', 'places^2', 'description', 'caption'],
@@ -101,8 +101,36 @@ export async function retrieve(question: string, options: { mediaId?: string; li
     }),
   ]);
 
-  const hitsOf = (response: { body: { hits: { hits: Array<{ _source?: unknown }> } } }) =>
-    response.body.hits.hits.map((hit) => toHit((hit._source ?? {}) as Record<string, unknown>));
+  return [hitsOf(knn as never), hitsOf(lexical as never)];
+}
 
-  return fuseRankings([hitsOf(knn as never), hitsOf(lexical as never)], hitKey).slice(0, limit);
+/** kNN and BM25 in parallel, then fused. `mediaId` scopes to one reel. */
+export async function retrieve(question: string, options: { mediaId?: string; limit?: number }): Promise<Hit[]> {
+  const limit = options.limit ?? 12;
+  const filter = options.mediaId ? [{ term: { media_id: options.mediaId } }] : [];
+  const rankings = await rankingsFor(question, filter, limit);
+  return fuseRankings(rankings, hitKey).slice(0, limit);
+}
+
+/**
+ * Retrieval for a request that has to be answered from the whole library rather
+ * than from one moment.
+ *
+ * "Create a travel plan for Istanbul with all the tips" is not one question, and
+ * a single query cannot find its evidence: the transit card, the markets, the
+ * viewpoint and the prices sit in different clips and answer to different words.
+ * So several queries run, and all their rankings are fused together — a moment
+ * that several facets surface rises, which is what "all the tips" needs.
+ */
+export async function retrieveMany(
+  queries: string[],
+  options: { mediaId?: string; perQuery?: number; limit?: number },
+): Promise<Hit[]> {
+  if (queries.length === 0) return [];
+  const perQuery = options.perQuery ?? 25;
+  const limit = options.limit ?? 60;
+  const filter = options.mediaId ? [{ term: { media_id: options.mediaId } }] : [];
+
+  const perQueryRankings = await Promise.all(queries.map((query) => rankingsFor(query, filter, perQuery)));
+  return fuseRankings(perQueryRankings.flat(), hitKey).slice(0, limit);
 }

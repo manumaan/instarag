@@ -15,6 +15,8 @@ export interface ReelLensStackProps extends StackProps {
   readonly retainData: boolean;
   readonly retentionDays?: number;
   readonly analysisModel: string;
+  /** Cheap model for the query-expansion pass in front of a plan. */
+  readonly expansionModel: string;
   readonly maxFrames: number;
   readonly embeddingModel: string;
   readonly maxOcu: number;
@@ -69,6 +71,7 @@ export class ReelLensStack extends Stack {
       search,
       connected,
       analysisModel: props.analysisModel,
+      expansionModel: props.expansionModel,
       embeddingModel: props.embeddingModel,
     });
 

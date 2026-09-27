@@ -298,6 +298,26 @@ aws secretsmanager put-secret-value \
 Until then the endpoint returns the entities and the query it would have run, flagged
 `configured: false`, instead of failing.
 
+## Plans
+
+Ask answers a question. A plan answers a request — "using all clips create me a travel plan
+for Istanbul with all the tips" — by reading across everything you have saved.
+
+It is a different shape of retrieval, not a longer answer. The evidence for a plan is
+scattered across clips that answer to different words, so the request is first expanded into
+several searches, and their rankings are fused into sixty moments rather than twelve.
+
+Every item in a plan cites the clips it came from, and anything the model writes that the
+retrieved moments do not support is dropped before you see it. Asked for Istanbul, a library
+of Istanbul clips produced thirty items across eight sections with nothing dropped, prices
+copied exactly as the clips showed them. Asked for Tokyo, the same library produced nothing
+at all and said so — which is the point. A plan also lists what you asked for that your
+clips do not cover.
+
+Plans are built in the background because they take about a minute, and an API Gateway
+integration is cut off at thirty seconds. The screen shows the request as building and
+fills it in when the worker is done.
+
 ## Durability
 
 `retainData` defaults to on, so the tables, the media bucket and the KMS token key survive

@@ -156,11 +156,49 @@ export interface Citation {
 
 export interface AskAnswer {
   threadId: string | null;
+  mode?: 'answer';
   /** false when the indexed frames did not support an answer. */
   answered: boolean;
   answer: string;
   citations: Citation[];
+  sources?: Source[];
   retrieved?: Citation[];
+}
+
+/** A clip a citation points at, so a chip can say whose it was. */
+export interface Source {
+  media_id: string;
+  type?: Media['type'];
+  uploader?: string;
+  caption?: string;
+  slide_count?: number;
+}
+
+export interface PlanItem {
+  text: string;
+  citations: Citation[];
+}
+
+export interface Plan {
+  title: string;
+  overview: string;
+  sections: Array<{ heading: string; items: PlanItem[] }>;
+  gaps: string[];
+  queries?: string[];
+  moments?: number;
+  itemsDropped?: number;
+}
+
+/**
+ * A plan is not returned by the request that asked for it: building one takes
+ * about a minute and the API cuts an integration off at thirty seconds. The
+ * thread comes back immediately and the answer lands on it.
+ */
+export interface PlanStarted {
+  threadId: string;
+  mode: 'plan';
+  status: 'working';
+  messageAt: string;
 }
 
 export interface ThreadMessage {
@@ -169,6 +207,12 @@ export interface ThreadMessage {
   role: 'user' | 'assistant';
   content: string;
   citations?: Citation[];
+  mode?: 'answer' | 'plan';
+  /** Plans only: 'working' until the worker fills the message in. */
+  status?: 'working' | 'ready' | 'unsupported' | 'failed';
+  plan?: Plan;
+  sources?: Source[];
+  error?: string;
 }
 
 export interface Thread {
@@ -186,6 +230,43 @@ export const ask = (question: string, options: { mediaId?: string; threadId?: st
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ question, mediaId: options.mediaId, threadId: options.threadId }),
   });
+
+/** Start a plan built from the whole library. Returns as soon as it is queued. */
+export const startPlan = (request: string, options: { mediaId?: string; threadId?: string } = {}) =>
+  call<PlanStarted>('/ask', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      question: request,
+      mode: 'plan',
+      mediaId: options.mediaId,
+      threadId: options.threadId,
+    }),
+  });
+
+/**
+ * Whether a line of text is asking for something built rather than a fact
+ * looked up. Deliberately a local guess and not a model call: it costs nothing,
+ * it is instant, and the panel shows which mode it picked so a wrong guess is
+ * one click to correct.
+ */
+const BUILD_VERBS = /^(create|make|build|write|draft|plan|give me|put together|assemble|compile)\b/i;
+const BUILD_NOUNS = /\b(itinerary|travel plan|trip plan|guide|checklist|packing list|shortlist|summary of everything|all the tips|all tips)\b/i;
+
+export function looksLikePlan(text: string): boolean {
+  const trimmed = text.trim();
+  if (BUILD_VERBS.test(trimmed)) return true;
+  if (BUILD_NOUNS.test(trimmed)) return true;
+  // "using all my clips …" is asking across the library, whatever follows.
+  return /\b(all|every) (my |the )?(clips|reels|videos|saves)\b/i.test(trimmed);
+}
+
+/** Labels a cited moment with whose clip it came from. */
+export function sourceLabel(source: Source | undefined, tsMs: number): string {
+  const moment = momentLabel({ type: source?.type ?? 'reel', slide_count: source?.slide_count }, tsMs);
+  const who = source?.uploader?.split('|')[0].trim();
+  return who ? `${who} · ${moment}` : moment;
+}
 
 export const listThreads = () => call<{ items: Thread[] }>('/threads');
 
