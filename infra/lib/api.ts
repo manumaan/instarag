@@ -1,5 +1,5 @@
 import { Construct } from 'constructs';
-import { Duration, Stack } from 'aws-cdk-lib';
+import { Duration } from 'aws-cdk-lib';
 import * as apigw from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpUserPoolAuthorizer } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
@@ -25,6 +25,9 @@ export interface ApiProps {
   readonly analysisModel: string;
   /** Cheap model for the query-expansion pass in front of a plan. */
   readonly expansionModel: string;
+  /** Model for Ask, plans and Lens. */
+  readonly answerModel: string;
+  readonly claudeKey: secretsmanager.Secret;
   readonly embeddingModel: string;
 }
 
@@ -181,16 +184,16 @@ export class Api extends Construct {
       MESSAGES_TABLE: storage.messagesTable.tableName,
       SEARCH_ENDPOINT: props.search.endpoint,
       SEARCH_INDEX: 'frames',
-      ANALYSIS_MODEL_ID: props.analysisModel,
+      ANSWER_MODEL_ID: props.answerModel,
+      CLAUDE_KEY_SECRET_ARN: props.claudeKey.secretArn,
     };
-    /** The three models a search handler may invoke: vision, embeddings, expansion. */
-    const bedrockModelArns = (p: { analysisModel: string; embeddingModel: string; expansionModel: string }) => [
-      `arn:aws:bedrock:${Stack.of(this).region}:${Stack.of(this).account}:inference-profile/${p.analysisModel}`,
-      `arn:aws:bedrock:*::foundation-model/${p.analysisModel.replace(/^(us|global)\./, '')}`,
+    /*
+     * Bedrock is embeddings only now. Every text and vision call goes to the
+     * Anthropic API with a key from Secrets Manager, so the only model left
+     * here is Titan Multimodal, which has no Anthropic equivalent.
+     */
+    const bedrockModelArns = (p: { embeddingModel: string }) => [
       `arn:aws:bedrock:*::foundation-model/${p.embeddingModel}`,
-      // Haiku turns one request into several searches — the cheap pass.
-      `arn:aws:bedrock:${Stack.of(this).region}:${Stack.of(this).account}:inference-profile/${p.expansionModel}`,
-      `arn:aws:bedrock:*::foundation-model/${p.expansionModel.replace(/^(us|global)\./, '')}`,
     ];
 
     const makeSearchFn = (name: string, file: string, exportName = 'main') =>
@@ -215,6 +218,7 @@ export class Api extends Construct {
      */
     const planWorker = makeSearchFn('PlanWorker', 'plan-worker.ts', 'handler');
     planWorker.addEnvironment('EXPANSION_MODEL_ID', props.expansionModel);
+    props.claudeKey.grantRead(planWorker);
     (planWorker.node.defaultChild as lambda.CfnFunction).timeout = 300;
     allow(planWorker, ['dynamodb:UpdateItem'], [storage.messagesTable.tableArn]);
     allow(planWorker, ['dynamodb:BatchGetItem'], [storage.mediaTable.tableArn]);
@@ -223,6 +227,7 @@ export class Api extends Construct {
 
     const ask = makeSearchFn('Ask', 'ask.ts');
     ask.addEnvironment('EXPANSION_MODEL_ID', props.expansionModel);
+    props.claudeKey.grantRead(ask);
     ask.addEnvironment('PLAN_WORKER_ARN', planWorker.functionArn);
     planWorker.grantInvoke(ask);
     allow(ask, ['dynamodb:PutItem'], [storage.threadsTable.tableArn]);
@@ -260,15 +265,14 @@ export class Api extends Construct {
     const lensWeb = makeSearchFn('LensWeb', 'web-lens.ts');
     lensWeb.addEnvironment('SEARCH_SECRET_ARN', this.webSearchSecret.secretArn);
     this.webSearchSecret.grantRead(lensWeb);
+    props.claudeKey.grantRead(lensWeb);
     allow(lensWeb, ['s3:GetObject'], [
       storage.mediaBucket.arnForObjects('lens/*'),
       storage.mediaBucket.arnForObjects('media/*'),
     ]);
     allow(lensWeb, ['dynamodb:Query'], [storage.framesTable.tableArn]);
-    allow(lensWeb, ['bedrock:InvokeModel'], [
-      `arn:aws:bedrock:${Stack.of(this).region}:${Stack.of(this).account}:inference-profile/${props.analysisModel}`,
-      `arn:aws:bedrock:*::foundation-model/${props.analysisModel.replace(/^(us|global)\./, '')}`,
-    ]);
+    // No Bedrock grant: Lens web reads entities off a frame and summarises the
+    // search results, both on the Anthropic API, and it embeds nothing.
 
     const listThreads = makeSearchFn('ListThreads', 'list-threads.ts');
     allow(listThreads, ['dynamodb:Query'], [`${storage.threadsTable.tableArn}/index/byCreatedAt`]);

@@ -1,9 +1,10 @@
 import { Construct } from 'constructs';
-import { Duration, Size, Stack } from 'aws-cdk-lib';
+import { Duration, Size } from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
@@ -16,7 +17,6 @@ import { Search } from './search';
  * so the id carries a `us.` prefix and the underlying foundation model needs
  * permission in every region the profile can route to.
  */
-const ANALYSIS_MODELS = ['us.anthropic.claude-sonnet-5', 'us.anthropic.claude-sonnet-4-6'];
 
 export interface PipelineProps {
   readonly storage: Storage;
@@ -24,6 +24,7 @@ export interface PipelineProps {
   readonly search: Search;
   /** Bedrock model for the vision pass. Override with -c analysisModel=... */
   readonly analysisModel: string;
+  readonly claudeKey: secretsmanager.Secret;
   /** Keyframe cap, which is the main cost lever on the analysis call. */
   readonly maxFrames: number;
   /** Titan Multimodal Embeddings model for the index stage. */
@@ -148,23 +149,15 @@ export class Pipeline extends Construct {
         FRAMES_TABLE: storage.framesTable.tableName,
         CAPTION_FACTS_TABLE: storage.captionFactsTable.tableName,
         ANALYSIS_MODEL_ID: props.analysisModel,
+        CLAUDE_KEY_SECRET_ARN: props.claudeKey.secretArn,
       },
       logGroup: new logs.LogGroup(this, 'AnalyseReelLogs', { retention: logs.RetentionDays.TWO_WEEKS }),
       bundling: { minify: true, sourceMap: true, format: OutputFormat.CJS, target: 'node22', externalModules: [] },
     });
 
-    const region = Stack.of(this).region;
-    const account = Stack.of(this).account;
-    this.analyseFunction.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['bedrock:InvokeModel'],
-        resources: [
-          // The profile, plus the foundation models it routes to in any region.
-          ...ANALYSIS_MODELS.map((id) => `arn:aws:bedrock:${region}:${account}:inference-profile/${id}`),
-          ...ANALYSIS_MODELS.map((id) => `arn:aws:bedrock:*::foundation-model/${id.replace(/^(us|global)\./, '')}`),
-        ],
-      }),
-    );
+    // The vision pass calls the Anthropic API, so it needs the key rather than
+    // Bedrock. Nothing in this handler touches a Bedrock model any more.
+    props.claudeKey.grantRead(this.analyseFunction);
     this.analyseFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['s3:GetObject'],

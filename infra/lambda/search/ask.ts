@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
-import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
+import { claude } from '../shared/claude';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { ddb } from '../shared/ddb';
@@ -14,9 +14,8 @@ const MESSAGES_TABLE = process.env.MESSAGES_TABLE!;
 const PLAN_WORKER_ARN = process.env.PLAN_WORKER_ARN!;
 
 const lambda = new LambdaClient({});
-const MODEL_ID = process.env.ANALYSIS_MODEL_ID!;
+const MODEL_ID = process.env.ANSWER_MODEL_ID!;
 
-const bedrock = new AnthropicBedrock({ awsRegion: process.env.AWS_REGION });
 
 const CitationSchema = z.object({
   media_id: z.string(),
@@ -72,7 +71,7 @@ export const main = handler(async (event) => {
     };
   }
 
-  const response = await bedrock.messages.parse({
+  const response = await (await claude()).messages.parse({
     model: MODEL_ID,
     max_tokens: 4096,
     thinking: { type: 'adaptive' },

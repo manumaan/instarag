@@ -1,6 +1,7 @@
 import { CfnOutput, Stack, type StackProps } from 'aws-cdk-lib';
 import type { Construct } from 'constructs';
 import { Storage } from './storage';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Auth } from './auth';
 import { Api } from './api';
 import { Pipeline } from './pipeline';
@@ -15,6 +16,8 @@ export interface ReelLensStackProps extends StackProps {
   readonly retainData: boolean;
   readonly retentionDays?: number;
   readonly analysisModel: string;
+  /** Model for Ask, plans and Lens. Cheaper and faster than the vision model. */
+  readonly answerModel: string;
   /** Cheap model for the query-expansion pass in front of a plan. */
   readonly expansionModel: string;
   readonly maxFrames: number;
@@ -51,6 +54,20 @@ export class ReelLensStack extends Stack {
       retentionDays: props.retentionDays,
     });
 
+    /*
+     * The Claude API key, not Bedrock: this account is still not entitled to
+     * Sonnet 5 or Opus 5 there — a 1-token invoke of either answers
+     * AccessDeniedException — while both are available on the direct API.
+     * Embeddings stay on Bedrock, since Titan is a Bedrock model.
+     *
+     * Named rather than generated, because it is set by hand:
+     *   aws secretsmanager put-secret-value --secret-id instarag-claude-key --secret-string <key>
+     */
+    const claudeKey = new secretsmanager.Secret(this, 'ClaudeApiKey', {
+      secretName: 'instarag-claude-key',
+      description: 'Anthropic API key for the vision, Ask, plan and Lens passes.',
+    });
+
     const auth = new Auth(this, 'Auth', { webOrigins });
 
     const search = new Search(this, 'Search', { maxOcu: props.maxOcu });
@@ -71,8 +88,10 @@ export class ReelLensStack extends Stack {
       search,
       connected,
       analysisModel: props.analysisModel,
+      answerModel: props.answerModel,
       expansionModel: props.expansionModel,
       embeddingModel: props.embeddingModel,
+      claudeKey,
     });
 
     const pipeline = new Pipeline(this, 'Pipeline', {
@@ -81,6 +100,7 @@ export class ReelLensStack extends Stack {
       analysisModel: props.analysisModel,
       maxFrames: props.maxFrames,
       embeddingModel: props.embeddingModel,
+      claudeKey,
     });
     const realtime = new Realtime(this, 'Realtime', { storage, auth });
 

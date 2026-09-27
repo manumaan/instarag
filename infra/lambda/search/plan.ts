@@ -1,11 +1,9 @@
-import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { retrieveMany, type Hit } from './retrieve';
+import { claude } from '../shared/claude';
 
-const bedrock = new AnthropicBedrock({ awsRegion: process.env.AWS_REGION });
-
-const SYNTHESIS_MODEL_ID = process.env.ANALYSIS_MODEL_ID!;
+const SYNTHESIS_MODEL_ID = process.env.ANSWER_MODEL_ID!;
 /** Haiku's job here is the cheap pass: turning one request into several queries. */
 const EXPANSION_MODEL_ID = process.env.EXPANSION_MODEL_ID!;
 
@@ -87,7 +85,7 @@ export function planQueries(request: string, expansion?: { topic?: string; queri
 /** One request becomes several searches. A failure here costs breadth, not the answer. */
 export async function expandRequest(request: string): Promise<string[]> {
   try {
-    const response = await bedrock.messages.parse({
+    const response = await (await claude()).messages.parse({
       model: EXPANSION_MODEL_ID,
       max_tokens: 512,
       output_config: { format: zodOutputFormat(ExpansionSchema) },
@@ -220,7 +218,7 @@ export async function buildPlan(request: string, options: { mediaId?: string } =
     };
   }
 
-  const response = await bedrock.messages.parse({
+  const response = await (await claude()).messages.parse({
     model: SYNTHESIS_MODEL_ID,
     max_tokens: PLAN_MAX_TOKENS,
     thinking: { type: 'adaptive' },

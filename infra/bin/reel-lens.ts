@@ -24,20 +24,23 @@ const retentionDaysRaw = app.node.tryGetContext('retentionDays');
 const retentionDays = retentionDaysRaw ? Number(retentionDaysRaw) : undefined;
 
 /**
- * Vision model for the analysis pass. Sonnet 5 is the decided model; this
- * account is not yet entitled to it on Bedrock, so the default stays on
- * Sonnet 4.6 until it is. Both are covered by the handler's IAM policy, so
- * switching is `-c analysisModel=us.anthropic.claude-sonnet-5`.
+ * Vision model for the analysis pass, on the **Anthropic API** rather than
+ * Bedrock: this account is still not entitled to Sonnet 5 or Opus 5 there — a
+ * 1-token invoke of either answers AccessDeniedException — while both are
+ * available directly. Opus 5 here because this pass reads signage and writes
+ * places evidence into the index permanently, so a misread is not recoverable.
  */
-const analysisModel = app.node.tryGetContext('analysisModel') ?? 'us.anthropic.claude-sonnet-4-6';
+const analysisModel = app.node.tryGetContext('analysisModel') ?? 'claude-opus-5';
+
+/** Ask, plans and Lens. Sonnet 5 is faster than Opus and cheaper per token. */
+const answerModel = app.node.tryGetContext('answerModel') ?? 'claude-sonnet-5';
 
 /**
  * The cheap pass in front of a plan: one request becomes several searches.
  * Haiku 4.5, per the architecture table's split between vision/Q&A and
- * classification. Verified invokable on this account.
+ * classification.
  */
-const expansionModel =
-  app.node.tryGetContext('expansionModel') ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
+const expansionModel = app.node.tryGetContext('expansionModel') ?? 'claude-haiku-4-5';
 
 /** Keyframe cap. The main cost lever: every frame is an image in the reel's one call. */
 const maxFrames = Number(app.node.tryGetContext('maxFrames') ?? 20);
@@ -81,6 +84,7 @@ new ReelLensStack(app, 'ReelLens', {
   retainData,
   retentionDays,
   analysisModel,
+  answerModel,
   expansionModel,
   maxFrames,
   embeddingModel,

@@ -1,6 +1,6 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
+import { claude } from '../shared/claude';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { ddb, TABLES } from '../shared/ddb';
 import { tsMsToSlide, type MediaRecord } from '../shared/media';
@@ -21,7 +21,6 @@ const MODEL_ID = process.env.ANALYSIS_MODEL_ID!;
 const EFFORT = (process.env.ANALYSIS_EFFORT ?? 'medium') as 'low' | 'medium' | 'high';
 const MAX_TOKENS = Number(process.env.ANALYSIS_MAX_TOKENS ?? 16000);
 
-const bedrock = new AnthropicBedrock({ awsRegion: process.env.AWS_REGION });
 
 export interface AnalyseEvent {
   mediaId: string;
@@ -85,7 +84,7 @@ export async function handler(event: AnalyseEvent): Promise<AnalyseResult> {
     }),
   });
 
-  const response = await bedrock.messages.parse({
+  const response = await (await claude()).messages.parse({
     model: MODEL_ID,
     max_tokens: MAX_TOKENS,
     thinking: { type: 'adaptive' },

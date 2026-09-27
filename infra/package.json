@@ -21,7 +21,7 @@
     "typescript": "~5.6.3"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.33.7",
+    "@anthropic-ai/sdk": "^0.128.0",
     "@aws-sdk/client-apigatewaymanagementapi": "^3.1136.0",
     "@aws-sdk/client-bedrock-runtime": "^3.1136.0",
     "@aws-sdk/client-dynamodb": "^3.669.0",

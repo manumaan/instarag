@@ -53,8 +53,9 @@ function synth(overrides: { retainData?: boolean } = {}) {
     // Defaults to what is actually deployed, so the rest of the suite exercises
     // the real configuration rather than a throwaway one.
     retainData: overrides.retainData ?? true,
-    analysisModel: 'us.anthropic.claude-sonnet-5',
-    expansionModel: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    analysisModel: 'claude-opus-5',
+    answerModel: 'claude-sonnet-5',
+    expansionModel: 'claude-haiku-4-5',
     maxFrames: 20,
     embeddingModel: 'amazon.titan-embed-image-v1',
     maxOcu: 2,
@@ -139,7 +140,7 @@ test('handlers only see table and bucket names, never credentials', () => {
     for (const key of Object.keys(env)) {
       assert.ok(
         // Resource identifiers only — never a secret, key or token.
-        /^(MEDIA_BUCKET|MEDIA_TABLE|FRAMES_TABLE|JOBS_TABLE|CONNECTIONS_TABLE|CAPTION_FACTS_TABLE|TRANSCRIPT_SEGMENTS_TABLE|STATE_MACHINE_ARN|USER_POOL_ID|USER_POOL_CLIENT_ID|WS_MANAGEMENT_ENDPOINT|SCENE_THRESHOLD|MAX_FRAMES|PHASH_THRESHOLD|MAX_DOWNLOAD_BYTES|YT_DLP_PATH|HOME|XDG_CACHE_HOME|ANALYSIS_MODEL_ID|EXPANSION_MODEL_ID|PLAN_WORKER_ARN|SEARCH_SECRET_ARN|IG_CONNECTION_TABLE|IG_APP_SECRET_ARN|IG_APP_ID|IG_REDIRECT_URI|IG_GRAPH_HOST|IG_AUTHORIZE_URL|IG_TOKEN_URL|ANALYSIS_EFFORT|ANALYSIS_MAX_TOKENS|THREADS_TABLE|MESSAGES_TABLE|SEARCH_ENDPOINT|SEARCH_INDEX|EMBEDDING_MODEL_ID|EMBEDDING_DIMENSION|AWS_NODEJS_CONNECTION_REUSE_ENABLED)$/.test(
+        /^(MEDIA_BUCKET|MEDIA_TABLE|FRAMES_TABLE|JOBS_TABLE|CONNECTIONS_TABLE|CAPTION_FACTS_TABLE|TRANSCRIPT_SEGMENTS_TABLE|STATE_MACHINE_ARN|USER_POOL_ID|USER_POOL_CLIENT_ID|WS_MANAGEMENT_ENDPOINT|SCENE_THRESHOLD|MAX_FRAMES|PHASH_THRESHOLD|MAX_DOWNLOAD_BYTES|YT_DLP_PATH|HOME|XDG_CACHE_HOME|ANALYSIS_MODEL_ID|ANSWER_MODEL_ID|EXPANSION_MODEL_ID|PLAN_WORKER_ARN|CLAUDE_KEY_SECRET_ARN|SEARCH_SECRET_ARN|IG_CONNECTION_TABLE|IG_APP_SECRET_ARN|IG_APP_ID|IG_REDIRECT_URI|IG_GRAPH_HOST|IG_AUTHORIZE_URL|IG_TOKEN_URL|ANALYSIS_EFFORT|ANALYSIS_MAX_TOKENS|THREADS_TABLE|MESSAGES_TABLE|SEARCH_ENDPOINT|SEARCH_INDEX|EMBEDDING_MODEL_ID|EMBEDDING_DIMENSION|AWS_NODEJS_CONNECTION_REUSE_ENABLED)$/.test(
           key,
         ),
         `${name} has unexpected env var ${key}`,
@@ -327,13 +328,14 @@ test('Bedrock access is invoke-only and limited to named models', () => {
     (policy) => policy.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown }>,
   );
   const invokes = statements.filter((s) => [s.Action].flat().some((a) => String(a).startsWith('bedrock:')));
-  // Adding another should be a deliberate edit here: the vision pass, the
-  // embedding stage, Ask (answers and plans), and the two Lens handlers.
-  assert.equal(
-    invokes.length,
-    6,
-    'only the analysis, indexing, Ask, the plan worker and two Lens handlers may call Bedrock',
+  // Bedrock is embeddings only: every text and vision call goes to the
+  // Anthropic API. Exactly four callers still need Titan to turn something into
+  // a vector — indexing, Ask, the plan worker and Lens find-similar.
+  assert.equal(invokes.length, 4, 'only the embedding callers may still reach Bedrock');
+  const embeddingOnly = invokes.every((statement) =>
+    [statement.Resource].flat().every((arn) => String(arn).includes('titan')),
   );
+  assert.ok(embeddingOnly, 'a generation model is still reachable on Bedrock');
   for (const statement of invokes) {
     assert.deepEqual(
       [statement.Action].flat(),
@@ -438,8 +440,8 @@ test('Lens query uploads are separate from media and expire', () => {
 
 test('every secret lives in Secrets Manager, with no value in the template', () => {
   const template = synth();
-  // Brave's search key and Instagram's app secret.
-  template.resourceCountIs('AWS::SecretsManager::Secret', 2);
+  // Brave's search key, Instagram's app secret, and the Claude API key.
+  template.resourceCountIs('AWS::SecretsManager::Secret', 3);
   for (const secret of Object.values(template.findResources('AWS::SecretsManager::Secret'))) {
     // CDK generates a placeholder; the real value is put in out of band.
     assert.ok(!('SecretString' in secret.Properties), 'a secret value must never be in the template');
@@ -531,11 +533,22 @@ test('the Instagram token is held under a customer-managed key', () => {
   assert.equal(keys[0].Properties.EnableKeyRotation, true);
 });
 
+test('the Claude API key has the name it is set by', () => {
+  const template = synth();
+  const named = Object.values(template.findResources('AWS::SecretsManager::Secret')).filter(
+    (secret) => secret.Properties.Name === 'instarag-claude-key',
+  );
+  // Set out of band by `put-secret-value --secret-id instarag-claude-key`, so a
+  // generated name would break the one documented way to populate it.
+  assert.equal(named.length, 1, 'the Claude key must keep its fixed name');
+  assert.ok(!('SecretString' in named[0].Properties));
+});
+
 test('the Instagram app secret is in Secrets Manager with no value in the template', () => {
   const template = synth();
   const secrets = Object.values(template.findResources('AWS::SecretsManager::Secret'));
-  // Brave's key plus Instagram's.
-  assert.equal(secrets.length, 2);
+  // Brave's key, Instagram's, and Claude's.
+  assert.equal(secrets.length, 3);
   for (const secret of secrets) {
     assert.ok(!('SecretString' in secret.Properties), 'no secret value may appear in the template');
   }

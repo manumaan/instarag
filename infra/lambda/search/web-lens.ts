@@ -1,6 +1,6 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
-import { AnthropicBedrock } from '@anthropic-ai/bedrock-sdk';
+import { claude } from '../shared/claude';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
@@ -10,10 +10,9 @@ import { searchWeb, SearchNotConfigured, type WebResult } from './brave';
 
 const s3 = new S3Client({});
 const secrets = new SecretsManagerClient({});
-const bedrock = new AnthropicBedrock({ awsRegion: process.env.AWS_REGION });
 
 const BUCKET = process.env.MEDIA_BUCKET!;
-const MODEL_ID = process.env.ANALYSIS_MODEL_ID!;
+const MODEL_ID = process.env.ANSWER_MODEL_ID!;
 const SEARCH_SECRET_ARN = process.env.SEARCH_SECRET_ARN!;
 
 /**
@@ -61,7 +60,7 @@ export const main = handler(async (event) => {
   const imageBase64 = await loadImage(body);
   const apiKey = await loadApiKey();
 
-  const extraction = await bedrock.messages.parse({
+  const extraction = await (await claude()).messages.parse({
     model: MODEL_ID,
     max_tokens: 2048,
     thinking: { type: 'adaptive' },
@@ -122,7 +121,7 @@ export const main = handler(async (event) => {
     };
   }
 
-  const answer = await bedrock.messages.parse({
+  const answer = await (await claude()).messages.parse({
     model: MODEL_ID,
     max_tokens: 2048,
     thinking: { type: 'adaptive' },

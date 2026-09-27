@@ -318,6 +318,22 @@ Plans are built in the background because they take about a minute, and an API G
 integration is cut off at thirty seconds. The screen shows the request as building and
 fills it in when the worker is done.
 
+## Models
+
+Generation runs on the Anthropic API — Opus 5 for the keyframe vision pass, Sonnet 5 for
+Ask, plans and Lens, Haiku 4.5 for the query expansion in front of a plan. Embeddings stay
+on Bedrock, because Titan Multimodal is a Bedrock model and there is no Anthropic
+equivalent, so the stack talks to both.
+
+The move was forced rather than chosen: this AWS account has never been entitled to Sonnet 5
+or Opus 5 on Bedrock, and a one-token invoke of either still returns AccessDeniedException.
+
+The API key lives in Secrets Manager under the fixed name `instarag-claude-key`:
+
+```bash
+aws secretsmanager put-secret-value --secret-id instarag-claude-key --secret-string <your-key>
+```
+
 ## Waking the index
 
 The vector index scales to zero when idle, which is what keeps the standing cost near
