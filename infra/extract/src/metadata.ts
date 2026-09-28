@@ -158,6 +158,8 @@ export function classifyPost(info: YtDlpInfo): PostShape {
 const LOGIN_WALL = [
   'login required',
   'requested content is not available',
+  // yt-dlp's catch-all names both causes; it is kept here because the observed
+  // real case behind it was a wall, not a limit.
   'rate-limit reached',
   'sign in to confirm',
   'you need to log in',
@@ -180,14 +182,38 @@ const LOGIN_WALL = [
  */
 const NO_VIDEO = ['no video formats found', 'no video could be found', 'unsupported url'];
 
+/**
+ * Anonymous rate limiting, which is **not** a login wall and not a broken link.
+ * Distinct because the remedy is distinct: a login wall never clears, this
+ * always does, and only one of them is worth trying again.
+ *
+ * Instagram's own message is "you have exceeded the rate-limit for accessing
+ * posts anonymously", and nothing in LOGIN_WALL matched it — so it used to fall
+ * through to a generic failure, which is in the pipeline's retry list, which
+ * then fired two more requests at a service that had just asked us to slow down.
+ *
+ * Matched narrowly on purpose. yt-dlp has a catch-all — "Requested content is
+ * not available, rate-limit reached or login required" — where it does not
+ * itself know which happened; that one stays with the login wall, where its
+ * handling was worked out against a real failure.
+ */
+const RATE_LIMITED = [
+  'exceeded the rate-limit',
+  'exceeded the rate limit',
+  'too many requests',
+  'http error 429',
+];
+
 export function explainDownloadFailure(stderr: string): {
   message: string;
   loginWalled: boolean;
   noVideo: boolean;
+  rateLimited: boolean;
 } {
   const haystack = stderr.toLowerCase();
   const noVideo = NO_VIDEO.some((phrase) => haystack.includes(phrase));
-  const loginWalled = !noVideo && LOGIN_WALL.some((phrase) => haystack.includes(phrase));
+  const rateLimited = !noVideo && RATE_LIMITED.some((phrase) => haystack.includes(phrase));
+  const loginWalled = !noVideo && !rateLimited && LOGIN_WALL.some((phrase) => haystack.includes(phrase));
   // Our subprocess wrapper prefixes "yt-dlp exited N: ", so ERROR: sits mid-line.
   const errorLine = stderr.split('\n').find((line) => line.includes('ERROR:'));
   const firstError = errorLine
@@ -200,6 +226,18 @@ export function explainDownloadFailure(stderr: string): {
         'Upload its images instead, or connect the account if it is yours.',
       loginWalled: false,
       noVideo: true,
+      rateLimited: false,
+    };
+  }
+  if (rateLimited) {
+    return {
+      // Says the one thing worth knowing: waiting fixes it, and Retry is there.
+      message:
+        'Instagram is rate-limiting anonymous downloads right now. This clears on its own — ' +
+        'try again in a little while.',
+      loginWalled: false,
+      noVideo: false,
+      rateLimited: true,
     };
   }
   return {
@@ -208,5 +246,6 @@ export function explainDownloadFailure(stderr: string): {
       : firstError,
     loginWalled,
     noVideo: false,
+    rateLimited: false,
   };
 }

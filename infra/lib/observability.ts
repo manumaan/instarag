@@ -180,6 +180,31 @@ export class Observability extends Construct {
     );
 
     /*
+     * Instagram's anonymous rate limit, which is the constraint most likely to
+     * decide whether pasted links survive more than one user. It has never
+     * fired: twenty-odd links over six days, none refused. This says when that
+     * stops being true, rather than leaving it to be noticed.
+     *
+     * One in an hour is worth knowing — it means the ceiling has been reached
+     * at this volume, which is the signal, not the incident.
+     */
+    notify(
+      new cloudwatch.Alarm(this, 'InstagramRateLimited', {
+        alarmDescription: 'Instagram refused an anonymous download. It clears, but the ceiling was hit.',
+        metric: new cloudwatch.Metric({
+          namespace: 'ReelLens',
+          metricName: 'DownloadsRateLimited',
+          statistic: 'Sum',
+          period: Duration.hours(1),
+        }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }),
+    );
+
+    /*
      * Kept despite reading 0 today: it is the only alarm that covers every
      * service at once, and it starts telling the truth the moment the account's
      * credits run out. Six-hour period because that is how often billing

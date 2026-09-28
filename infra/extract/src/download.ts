@@ -9,6 +9,7 @@ import { BatchWriteCommand, DynamoDBDocumentClient, GetCommand, UpdateCommand } 
 import { convertSlide, readFrame, run } from './ffmpeg';
 import { mapWithConcurrency } from './concurrency';
 import { writeThumbnail } from './thumbnail';
+import { recordDownload } from './metrics';
 import {
   classifyPost,
   explainDownloadFailure,
@@ -157,7 +158,13 @@ export async function handler(event: DownloadEvent): Promise<DownloadResult> {
       hasCaption: Boolean(fields.caption_raw),
       uploader: fields.uploader,
     });
+    recordDownload('ok', { mediaId, bytes: size, kind: 'reel' });
     return { mediaId, kind: 'reel', s3Key, bytes: size, hasCaption: Boolean(fields.caption_raw) };
+  } catch (err) {
+    recordDownload((err as Error).name === 'InstagramRateLimited' ? 'rate_limited' : 'failed', {
+      mediaId,
+    });
+    throw err;
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
@@ -275,6 +282,7 @@ async function storeSlides(
     bytes,
     hasCaption: Boolean(fields.caption_raw),
   });
+  recordDownload('ok', { mediaId, bytes, kind: 'carousel' });
   return {
     mediaId,
     kind: 'carousel',
@@ -349,10 +357,18 @@ function baseArgs(): string[] {
 /** Surfaces a login wall as a login wall rather than a generic exit code. */
 function asDownloadError(err: unknown): Error {
   const raw = err instanceof Error ? err.message : String(err);
-  const { message, loginWalled, noVideo } = explainDownloadFailure(raw);
+  const { message, loginWalled, noVideo, rateLimited } = explainDownloadFailure(raw);
   const error = new Error(message);
   // Distinct names so the pipeline does not retry what cannot succeed: neither
   // a login wall nor a post with no video will change on a second attempt.
-  error.name = noVideo ? 'NoVideoInPost' : loginWalled ? 'InstagramLoginWall' : 'DownloadFailed';
+  error.name = noVideo
+    ? 'NoVideoInPost'
+    : rateLimited
+      ? // Deliberately not DownloadFailed: that name is in the pipeline's retry
+        // list, and retrying a rate limit sends more of exactly what tripped it.
+        'InstagramRateLimited'
+      : loginWalled
+        ? 'InstagramLoginWall'
+        : 'DownloadFailed';
   return error;
 }

@@ -169,3 +169,38 @@ test('the slide interval agrees across the two bundles', () => {
   // own. If these drift, every slide citation silently points at another slide.
   assert.equal(EXTRACT_SLIDE_INTERVAL_MS, SLIDE_INTERVAL_MS);
 });
+
+test('the rate limit is not a login wall, and says so', () => {
+  // Instagram's own wording, which matched nothing in LOGIN_WALL, so it fell
+  // through to a generic failure that the pipeline then retried — sending more
+  // of exactly what had tripped it.
+  const real = 'ERROR: [Instagram] ABC: You have exceeded the rate-limit for accessing posts anonymously';
+  const explained = explainDownloadFailure(real);
+
+  assert.equal(explained.rateLimited, true);
+  assert.equal(explained.loginWalled, false, 'a rate limit clears; a login wall does not');
+  assert.equal(explained.noVideo, false);
+  assert.match(explained.message, /clears on its own/);
+});
+
+test('a login wall is still a login wall', () => {
+  const walled = explainDownloadFailure('ERROR: Requested content is not available, login required');
+  assert.equal(walled.loginWalled, true);
+  assert.equal(walled.rateLimited, false);
+
+  // yt-dlp's catch-all names both causes and knows neither. It keeps the wall
+  // handling that was worked out against a real failure, rather than being
+  // claimed by the narrower match.
+  const ambiguous = explainDownloadFailure(
+    'ERROR: [Instagram] X: Requested content is not available, rate-limit reached or login required',
+  );
+  assert.equal(ambiguous.loginWalled, true);
+  assert.equal(ambiguous.rateLimited, false);
+});
+
+test('an image post is neither', () => {
+  const post = explainDownloadFailure('ERROR: [Instagram] X: No video formats found!');
+  assert.equal(post.noVideo, true);
+  assert.equal(post.rateLimited, false);
+  assert.equal(post.loginWalled, false);
+});
