@@ -7,6 +7,7 @@ import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb, TABLES } from '../shared/ddb';
 import { badRequest, handler, parseJsonBody } from '../shared/http';
 import { searchWeb, SearchNotConfigured, type WebResult } from './brave';
+import { recordUsage } from '../shared/usage';
 
 const s3 = new S3Client({});
 const secrets = new SecretsManagerClient({});
@@ -86,6 +87,8 @@ export const main = handler(async (event) => {
     ],
   });
 
+  recordUsage('lens-extract', MODEL_ID, extraction.usage);
+
   const extracted = extraction.parsed_output;
   if (!extracted?.query) throw new Error('could not work out what to search for');
 
@@ -139,6 +142,8 @@ export const main = handler(async (event) => {
       },
     ],
   });
+
+  recordUsage('lens-summarise', MODEL_ID, answer.usage);
 
   const parsed = answer.parsed_output;
   const allowedUrls = new Set(results.map((result) => result.url));

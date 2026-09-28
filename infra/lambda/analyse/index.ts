@@ -6,6 +6,7 @@ import { ddb, TABLES } from '../shared/ddb';
 import { tsMsToSlide, type MediaRecord } from '../shared/media';
 import { AnalysisSchema, captionFacts, reconcileFrames, sanitisePlaces, type Analysis } from './schema';
 import { buildInstruction } from './prompt';
+import { recordUsage } from '../shared/usage';
 
 const s3 = new S3Client({});
 const BUCKET = process.env.MEDIA_BUCKET!;
@@ -95,6 +96,8 @@ export async function handler(event: AnalyseEvent): Promise<AnalyseResult> {
   if (response.stop_reason === 'refusal') {
     throw new Error('the model declined to analyse this reel');
   }
+  recordUsage('analyse', MODEL_ID, response.usage);
+
   const analysis = response.parsed_output as Analysis | null;
   if (!analysis) throw new Error(`model returned no parsable analysis (stop_reason ${response.stop_reason})`);
 

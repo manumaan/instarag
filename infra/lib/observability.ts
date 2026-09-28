@@ -100,12 +100,11 @@ export class Observability extends Construct {
       }),
     );
 
-    // Throttling and access denials both land here. A few are noise; a burst is
-    // the analysis pass failing for every reel, which is what happened when the
-    // model id lacked its inference-profile prefix.
+    // Embeddings only, since generation left Bedrock: a burst here means Titan
+    // is refusing, which stops anything new becoming searchable.
     notify(
       new cloudwatch.Alarm(this, 'BedrockClientErrors', {
-        alarmDescription: 'Bedrock is rejecting calls: throttling, entitlement or a bad model id.',
+        alarmDescription: 'Bedrock is rejecting embedding calls: throttling or a bad model id.',
         metric: new cloudwatch.Metric({
           namespace: 'AWS/Bedrock',
           metricName: 'InvocationClientErrors',
@@ -120,17 +119,22 @@ export class Observability extends Construct {
     );
 
     /*
-     * The spend guard that works today. EstimatedCharges reads 0 while account
-     * credits cover the bill, so it cannot be relied on yet; tokens are metered
-     * whether or not anyone is paying. A reel is around 10k input tokens, so
-     * this catches a loop re-analysing the library rather than ordinary use.
+     * The spend guard, and the only one that sees the models at all.
+     *
+     * It used to watch AWS/Bedrock InputTokenCount. Moving generation to the
+     * Anthropic API blinded that: Bedrock now serves embeddings only, and the
+     * AWS billing alarm below will never see Anthropic charges, because they
+     * bill to a different account. So the handlers publish their own token
+     * counts (lambda/shared/usage.ts, Embedded Metric Format) and this watches
+     * those. A reel is around 10k input tokens, so the default catches a loop
+     * re-analysing the library rather than ordinary use.
      */
     notify(
-      new cloudwatch.Alarm(this, 'BedrockTokenBurn', {
-        alarmDescription: 'Unusual Bedrock input-token volume: something may be looping.',
+      new cloudwatch.Alarm(this, 'ModelTokenBurn', {
+        alarmDescription: 'Unusual model input-token volume: something may be looping.',
         metric: new cloudwatch.Metric({
-          namespace: 'AWS/Bedrock',
-          metricName: 'InputTokenCount',
+          namespace: 'ReelLens',
+          metricName: 'TokensIn',
           statistic: 'Sum',
           period: Duration.hours(1),
         }),

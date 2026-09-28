@@ -776,3 +776,21 @@ test('the library grid is served a thumbnail, not the analysis frame', () => {
   // memory extraction runs at nor its five minutes.
   assert.ok(thumbnailer.Properties.Timeout <= 120);
 });
+
+test('the spend alarm watches the models, not just what is left on Bedrock', () => {
+  const template = synth();
+  const alarms = Object.values(template.findResources('AWS::CloudWatch::Alarm'));
+
+  // Generation runs on the Anthropic API, so AWS/Bedrock sees embeddings only
+  // and AWS/Billing never sees those charges at all. An alarm on either would
+  // be watching a quiet corner while the models ran away.
+  const onModelTokens = alarms.filter(
+    (a) => a.Properties.Namespace === 'ReelLens' && a.Properties.MetricName === 'TokensIn',
+  );
+  assert.equal(onModelTokens.length, 1, 'nothing watches what the models actually spend');
+  assert.ok((onModelTokens[0].Properties.AlarmActions ?? []).length > 0);
+
+  // One metric, undimensioned, on purpose: each dimension combination is a
+  // separate custom metric at $0.30/month against a stack that idles at ~$2.
+  assert.ok(!onModelTokens[0].Properties.Dimensions?.length, 'the spend metric must stay undimensioned');
+});

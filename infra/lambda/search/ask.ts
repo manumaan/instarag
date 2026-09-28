@@ -8,6 +8,7 @@ import { ddb } from '../shared/ddb';
 import { badRequest, handler, parseJsonBody } from '../shared/http';
 import { retrieve, warmIndex, type Hit } from './retrieve';
 import { sourcesFor } from './sources';
+import { recordUsage } from '../shared/usage';
 
 const THREADS_TABLE = process.env.THREADS_TABLE!;
 const MESSAGES_TABLE = process.env.MESSAGES_TABLE!;
@@ -91,6 +92,8 @@ export const main = handler(async (event) => {
     ].join('\n'),
     messages: [{ role: 'user', content: `${formatContext(hits)}\n\nQuestion: ${question}` }],
   });
+
+  recordUsage('ask', MODEL_ID, response.usage);
 
   const parsed = response.parsed_output;
   if (!parsed) throw new Error(`model returned no parsable answer (stop_reason ${response.stop_reason})`);

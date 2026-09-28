@@ -2,6 +2,7 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { retrieveMany, type Hit } from './retrieve';
 import { claude } from '../shared/claude';
+import { recordUsage } from '../shared/usage';
 
 const SYNTHESIS_MODEL_ID = process.env.ANSWER_MODEL_ID!;
 /** Haiku's job here is the cheap pass: turning one request into several queries. */
@@ -97,6 +98,7 @@ export async function expandRequest(request: string): Promise<string[]> {
       ].join('\n'),
       messages: [{ role: 'user', content: request }],
     });
+    recordUsage('expand', EXPANSION_MODEL_ID, response.usage);
     return planQueries(request, response.parsed_output ?? undefined);
   } catch (err) {
     console.warn('query expansion failed; falling back to the request itself', err);
@@ -243,6 +245,8 @@ export async function buildPlan(request: string, options: { mediaId?: string } =
   });
 
   console.log('plan synthesis', { synthesisMs: since() - retrievedAt, totalMs: since() });
+
+  recordUsage('plan', SYNTHESIS_MODEL_ID, response.usage);
 
   const parsed = response.parsed_output;
   if (!parsed) {
